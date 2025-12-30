@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import gradio as gr
 from app import demo
@@ -54,3 +54,4 @@ def pwa_shell():
 
 # 3) Gradio 앱은 /app으로 마운트
 app = gr.mount_gradio_app(app, demo, path="/app")
+
