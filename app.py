@@ -8,7 +8,7 @@ from PIL import Image
 import gradio as gr
 
 # =========================
-# 기본 설정
+# timezone (KST)
 # =========================
 os.environ["TZ"] = "Asia/Seoul"
 try:
@@ -36,7 +36,6 @@ def safe_parse_hm(hm: str):
     return None
 
 def image_to_b64(img):
-    """Gradio Image(type='pil') 기준. numpy가 와도 처리."""
     if img is None:
         return ""
     try:
@@ -61,18 +60,32 @@ def b64_to_data_uri(b64_str):
     return f"data:image/jpeg;base64,{b64_str}" if b64_str else ""
 
 # =========================
-# DB (SQLite)
+# DB path 결정 (영구저장 우선)
 # =========================
-# Render에서 디스크가 아직 없으면 /tmp를 사용 (임시)
-DEFAULT_DIR = "/var/data" if os.path.isdir("/var/data") else "/tmp/oseyo"
-DATA_DIR = os.getenv("OSEYO_DATA_DIR", DEFAULT_DIR)
+def _dir_writable(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+        testfile = os.path.join(path, ".write_test")
+        with open(testfile, "w") as f:
+            f.write("ok")
+        os.remove(testfile)
+        return True
+    except:
+        return False
 
-os.makedirs(DATA_DIR, exist_ok=True)
+# Render Disk가 /var/data 로 붙으면 여기 writable 됨
+PREFERRED_DIR = os.getenv("OSEYO_DATA_DIR", "/var/data")
+if _dir_writable(PREFERRED_DIR):
+    DATA_DIR = PREFERRED_DIR
+    PERSISTENT = True
+else:
+    DATA_DIR = "/tmp/oseyo"
+    os.makedirs(DATA_DIR, exist_ok=True)
+    PERSISTENT = False
+
 DB_PATH = os.path.join(DATA_DIR, "oseyo.db")
 
-
 def db_conn():
-    # check_same_thread=False: Gradio/uvicorn 멀티스레드 대비
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def db_init():
@@ -95,9 +108,7 @@ def db_init():
         created_at TEXT NOT NULL
     );
     """)
-    cur.execute("""
-    CREATE INDEX IF NOT EXISTS idx_spaces_time ON spaces(start_iso, end_iso);
-    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_spaces_time ON spaces(start_iso, end_iso);")
     cur.execute("""
     CREATE TABLE IF NOT EXISTS favorites (
         activity TEXT PRIMARY KEY
@@ -108,19 +119,19 @@ def db_init():
 
 db_init()
 
-def db_list_spaces():
+def db_list_spaces(limit=300):
     con = db_conn()
     con.row_factory = sqlite3.Row
     cur = con.cursor()
     cur.execute("""
         SELECT * FROM spaces
         WHERE hidden = 0
-        ORDER BY start_iso DESC, created_at DESC
-        LIMIT 200
-    """)
+        ORDER BY created_at DESC
+        LIMIT ?
+    """, (int(limit),))
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
-    # 파이썬 dict 키를 기존 코드와 비슷하게 맞춤
+
     out = []
     for r in rows:
         out.append({
@@ -166,15 +177,14 @@ def db_insert_space(space: dict):
     con.commit()
     con.close()
 
-def db_delete_space(space_id: str):
+def db_delete_space(space_id: str) -> bool:
     con = db_conn()
     cur = con.cursor()
-    # 실제 삭제 대신 hidden=1 처리해도 되는데, 요청이 "삭제"라서 delete로 처리
     cur.execute("DELETE FROM spaces WHERE id = ?", (space_id,))
-    deleted = (cur.rowcount > 0)
+    ok = (cur.rowcount > 0)
     con.commit()
     con.close()
-    return deleted
+    return ok
 
 def db_list_favorites():
     con = db_conn()
@@ -192,9 +202,9 @@ def db_add_favorite(act: str):
     con.close()
 
 # =========================
-# 비즈니스 로직
+# 핵심 로직
 # =========================
-HOURS = list(range(0, 13))   # 0~12시간
+HOURS = list(range(0, 13))
 MINS  = [0, 15, 30, 45]
 
 def active_spaces(spaces):
@@ -269,7 +279,6 @@ def confirm_addr_wrap_by_label(cands, label, detail):
             gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
             gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)
         )
-
     chosen = None
     for c in cands or []:
         if c.get("label") == label:
@@ -335,7 +344,6 @@ def make_map_html(items, center=(36.0190, 129.3435), zoom=13):
     return f"""
     <div class="mapWrap">
       <iframe src="data:text/html;base64,{b64}" class="mapFrame" loading="lazy"></iframe>
-      <div class="mapHint">📍 확대/축소: 버튼/휠 · 이동: 드래그</div>
     </div>
     """
 
@@ -343,43 +351,73 @@ def draw_map_from_db():
     spaces = db_list_spaces()
     return make_map_html(active_spaces(spaces), center=(36.0190, 129.3435), zoom=13)
 
+# =========================
+# 카드 렌더 (삭제 버튼 포함)
+# =========================
+def banner_html():
+    if PERSISTENT:
+        return f"""
+        <div class="banner ok">
+          ✅ 영구저장 모드이다 (DB: <b>{DB_PATH}</b>). 새로고침해도 이벤트가 유지된다.
+        </div>
+        """
+    return f"""
+    <div class="banner warn">
+      ⚠️ 임시저장 모드이다 (DB: <b>{DB_PATH}</b>). <b>Render Disk를 /var/data로 붙이지 않으면</b> 새로고침/재시작 시 이벤트가 사라질 수 있다.
+    </div>
+    """
+
 def render_home_from_db():
     spaces = db_list_spaces()
     items = active_spaces(spaces)
+
+    top = banner_html()
     if not items:
-        return """
-        <div class="card">
+        return top + """
+        <div class="card empty">
           <div class="h">아직 열린 공간이 없습니다</div>
           <div class="p">오른쪽 아래 + 버튼으로 먼저 열어보면 된다</div>
         </div>
         """
-    out=[]
+
+    out = [top]
     for s in items:
         try:
             st = fmt_hm(datetime.fromisoformat(s["start"]))
             en = fmt_hm(datetime.fromisoformat(s["end"]))
         except:
             st, en = "-", "-"
+
         cap = f"최대 {s['capacityMax']}명" if s.get("capacityEnabled") else "제한 없음"
         detail = (s.get("address_detail") or "").strip()
         detail_line = f"<div class='muted'>상세: {detail}</div>" if detail else ""
         photo_uri = b64_to_data_uri(s.get("photo_b64",""))
-        img = f"<img class='imgtag' src='{photo_uri}' alt='photo' />" if photo_uri else ""
+        img = f"<img class='thumb' src='{photo_uri}' alt='photo' />" if photo_uri else "<div class='thumb placeholder'></div>"
 
+        # 삭제 버튼: /api/delete?id=... 호출 후 새로고침
         out.append(f"""
-        <div class="card">
-          {img}
-          <div class="title">{s['title']}</div>
-          <div class="muted">오늘 {st}–{en}</div>
-          <div class="muted">{s['address_confirmed']}</div>
-          {detail_line}
-          <div class="muted">{cap}</div>
-          <div class="row"><div class="chip">ID: {s['id']}</div></div>
+        <div class="card rowcard">
+          <div class="left">
+            <div class="title">{s['title']}</div>
+            <div class="muted">오늘 {st}–{en}</div>
+            <div class="muted">{s['address_confirmed']}</div>
+            {detail_line}
+            <div class="muted">{cap}</div>
+            <div class="idline">ID: {s['id']}</div>
+            <div class="actions">
+              <button class="btn-del" onclick="oseyoDelete('{s['id']}')">삭제</button>
+            </div>
+          </div>
+          <div class="right">
+            {img}
+          </div>
         </div>
         """)
     return "\n".join(out)
 
-# ---- UI handlers ----
+# =========================
+# create / favorites / UI 핸들러
+# =========================
 def open_main_sheet():
     return (gr.update(visible=True), gr.update(visible=True), gr.update(visible=True), "", fmt_hm(now_kst()))
 
@@ -420,15 +458,6 @@ def use_favorite(label):
     if not label:
         return gr.update()
     return gr.update(value=label)
-
-def delete_space_db(del_id):
-    del_id = (del_id or "").strip()
-    if not del_id:
-        return "⚠️ 삭제할 ID를 입력해 달라.", render_home_from_db(), draw_map_from_db()
-    ok = db_delete_space(del_id)
-    if not ok:
-        return f"⚠️ ID '{del_id}'를 찾지 못했다.", render_home_from_db(), draw_map_from_db()
-    return f"✅ ID '{del_id}' 이벤트를 삭제했다.", render_home_from_db(), draw_map_from_db()
 
 def create_space_db(
     activity_text, start_hm, dur_h, dur_m, capacity_unlimited, cap_max,
@@ -488,38 +517,63 @@ def create_space_db(
     return msg, render_home_from_db(), draw_map_from_db(), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
 # =========================
-# CSS
+# CSS + JS (FAB / 삭제)
 # =========================
 CSS = r"""
-:root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --accent:#111; --card:#ffffffcc; --orange:#FF6A00; }
+:root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --accent:#111; --card:#ffffffcc; --orange:#FF6A00; --danger:#ef4444; }
+
 html, body { width:100%; max-width:100%; overflow-x:hidden !important; }
 .gradio-container { background: var(--bg) !important; width:100% !important; max-width:100% !important; overflow-x:hidden !important; }
 * { box-sizing: border-box !important; }
 .gradio-container * { max-width:100% !important; }
 
-.card{ background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 14px; margin: 12px 8px; overflow:hidden; }
+.banner{ max-width: 900px; margin: 10px auto 6px; padding: 10px 12px; border-radius: 14px; font-size: 13px; line-height:1.5; }
+.banner.ok{ background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; }
+.banner.warn{ background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; }
+
+.card{ background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px; margin: 12px auto; max-width: 900px; }
+.card.empty{ max-width: 600px; }
 .h{ font-size: 16px; font-weight: 900; color: var(--ink); margin-bottom: 6px; }
 .p{ font-size: 13px; color: var(--muted); line-height: 1.6; }
-.title{ font-size: 16px; font-weight: 900; color: var(--ink); margin-bottom: 6px; }
-.muted{ font-size: 13px; color: var(--muted); line-height: 1.6; }
-.row{ margin-top: 10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.chip{ display:inline-block; padding: 8px 12px; border-radius: 999px; border:1px solid var(--line); background:#fff; font-size: 12px; color: var(--muted); }
 
-.imgtag{
-  width:100%;
-  height:160px;
-  object-fit:cover;
-  border-radius:18px;
-  display:block;
-  margin-bottom:12px;
+.rowcard{ display:flex; gap: 14px; align-items: stretch; }
+.rowcard .left{ flex: 1; min-width: 0; display:flex; flex-direction:column; }
+.rowcard .right{ width: 180px; flex: 0 0 180px; display:flex; align-items:center; justify-content:center; }
+.title{ font-size: 16px; font-weight: 900; color: var(--ink); margin-bottom: 6px; }
+.muted{ font-size: 13px; color: var(--muted); line-height: 1.55; }
+.idline{ margin-top: 8px; font-size: 12px; color:#9CA3AF; }
+.actions{ margin-top: auto; display:flex; justify-content:flex-end; padding-top: 10px; }
+.btn-del{
+  appearance:none; border:0; cursor:pointer;
+  background: var(--danger); color:#fff;
+  font-weight:900; font-size:13px;
+  padding: 10px 12px;
+  border-radius: 12px;
 }
 
+.thumb{
+  width: 100%;
+  height: 130px;
+  object-fit: cover;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  display:block;
+  background:#fff;
+}
+.thumb.placeholder{
+  width: 100%;
+  height: 130px;
+  border-radius: 14px;
+  border: 1px dashed var(--line);
+  background: rgba(255,255,255,0.6);
+}
+
+/* 지도 탭 화면 꽉차게 */
 .mapWrap{ width: 100vw; max-width: 100vw; margin: 0; padding: 0; overflow:hidden; }
-.mapFrame{ width: 100vw; height: calc(100vh - 220px); border: 0; border-radius: 0; }
-.mapHint{ text-align:center; font-size: 12px; color: var(--muted); margin: 8px 0 12px; }
+.mapFrame{ width: 100vw; height: calc(100vh - 180px); border: 0; border-radius: 0; }
 
+/* 모달 */
 .oseyo_overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 99990; }
-
 .oseyo_panel{
   position: fixed; left: 50%; transform: translateX(-50%); bottom: 0;
   width: min(420px, 96vw); height: 88vh;
@@ -554,21 +608,58 @@ html, body { width:100%; max-width:100%; overflow-x:hidden !important; }
 }
 .oseyo_footer .primary button{ background: var(--orange) !important; color:#fff !important; border:0 !important; }
 
-#oseyo_fab { position: fixed !important; right: 18px !important; bottom: 18px !important; z-index: 200000 !important; width: 56px !important; height:56px !important; background: transparent !important; border: none !important; }
-#oseyo_fab button{
-  width:56px !important; height:56px !important; min-width:56px !important;
-  border-radius:50% !important; border:0 !important;
-  background: var(--accent) !important; color:#FAF9F6 !important;
-  font-size:32px !important; font-weight:900 !important;
-  line-height:56px !important; padding:0 !important; margin:0 !important;
-  box-shadow:0 14px 30px rgba(0,0,0,0.35) !important;
+/* 진짜 FAB(오른쪽 하단 고정 원형) */
+#oseyo_fab_ui{
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--accent);
+  color: #FAF9F6;
+  font-size: 34px;
+  font-weight: 900;
+  line-height: 58px;
+  text-align:center;
+  cursor:pointer;
+  z-index: 200000;
+  box-shadow: 0 14px 30px rgba(0,0,0,0.35);
 }
+"""
+
+JS = r"""
+<script>
+window.oseyoDelete = async function(id){
+  if(!confirm("이 이벤트를 삭제하겠습니까?")) return;
+  try{
+    const res = await fetch(`/api/delete?id=${encodeURIComponent(id)}`, {method:"POST"});
+    if(!res.ok){
+      alert("삭제 실패");
+      return;
+    }
+    // Gradio state 리렌더가 아니라 "DB 기반"이라 그냥 새로고침하면 됨
+    location.reload();
+  }catch(e){
+    alert("삭제 실패(네트워크)");
+  }
+}
+
+window.oseyoOpenModal = function(){
+  const btn = document.querySelector("#fab_hidden button");
+  if(btn) btn.click();
+}
+</script>
 """
 
 # =========================
 # Gradio UI
 # =========================
 with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
+    # FastAPI app (for delete API)
+    app = demo.app
+
     # place states
     addr_confirmed = gr.State("")
     addr_detail = gr.State("")
@@ -579,8 +670,10 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     addr_candidates = gr.State([])
     chosen_label = gr.State("")
 
+    gr.HTML(JS)
+
     gr.HTML("""
-    <div style="max-width:420px;margin:0 auto;padding:16px 10px 6px;text-align:center;">
+    <div style="max-width:900px;margin:0 auto;padding:16px 10px 6px;text-align:center;">
       <div style="font-size:26px;font-weight:900;color:#1F2937;letter-spacing:-0.2px;">지금, 열려 있습니다</div>
       <div style="margin-top:6px;font-size:13px;color:#6B7280;">원하시면 오세요</div>
     </div>
@@ -590,18 +683,13 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         with gr.Tab("탐색"):
             home_html = gr.HTML(value=render_home_from_db())
             refresh_btn = gr.Button("새로고침")
-
-            gr.Markdown("### 이벤트 삭제")
-            with gr.Row():
-                delete_id = gr.Textbox(label="삭제할 ID", placeholder="예: a1b2c3d4", lines=1, scale=8)
-                delete_btn = gr.Button("삭제", scale=2)
-            delete_msg = gr.Markdown("")
-
         with gr.Tab("지도"):
             map_refresh = gr.Button("지도 새로고침")
             map_html = gr.HTML(value=draw_map_from_db())
 
-    fab = gr.Button("+", elem_id="oseyo_fab")
+    # 화면 위에 FAB UI만 올리고, 실제 동작은 숨겨진 gr.Button으로 트리거
+    gr.HTML("<button id='oseyo_fab_ui' onclick='oseyoOpenModal()'>+</button>")
+    fab_hidden = gr.Button("FAB", elem_id="fab_hidden", visible=False)
 
     # ===== MAIN MODAL =====
     main_overlay = gr.HTML("<div class='oseyo_overlay'></div>", visible=False)
@@ -654,30 +742,22 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         addr_back = gr.Button("뒤로")
         addr_confirm_btn = gr.Button("주소 선택 완료", elem_classes=["primary"])
 
+    # ===== API: delete =====
+    @app.post("/api/delete")
+    def api_delete(id: str):
+        ok = db_delete_space((id or "").strip())
+        return {"ok": ok}
+
     # ===== wiring =====
     refresh_btn.click(fn=render_home_from_db, inputs=None, outputs=home_html)
     map_refresh.click(fn=draw_map_from_db, inputs=None, outputs=map_html)
 
-    def _open_main():
-        return (gr.update(visible=True), gr.update(visible=True), gr.update(visible=True), "", fmt_hm(now_kst()))
-    def _close_main():
-        return (gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), "")
+    fab_hidden.click(fn=open_main_sheet, inputs=None, outputs=[main_overlay, main_sheet, main_footer, main_msg, start_hm])
+    main_close.click(fn=close_main_sheet, inputs=None, outputs=[main_overlay, main_sheet, main_footer, main_msg])
 
-    fab.click(fn=_open_main, inputs=None, outputs=[main_overlay, main_sheet, main_footer, main_msg, start_hm])
-    main_close.click(fn=_close_main, inputs=None, outputs=[main_overlay, main_sheet, main_footer, main_msg])
-
-    # favorites
-    add_act_btn.click(
-        fn=add_favorite_db,
-        inputs=[activity_text],
-        outputs=[fav_msg, fav_radio]
-    )
+    add_act_btn.click(fn=add_favorite_db, inputs=[activity_text], outputs=[fav_msg, fav_radio])
     fav_radio.change(fn=use_favorite, inputs=[fav_radio], outputs=[activity_text])
 
-    # delete
-    delete_btn.click(fn=delete_space_db, inputs=[delete_id], outputs=[delete_msg, home_html, map_html])
-
-    # open addr
     open_addr_btn.click(
         fn=open_addr_sheet,
         inputs=None,
@@ -690,24 +770,20 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         ]
     )
 
-    # back
     addr_back.click(
         fn=back_to_main_from_addr,
         inputs=None,
         outputs=[main_overlay, main_sheet, main_footer, addr_overlay, addr_sheet, addr_footer, addr_msg]
     )
 
-    # search
     addr_search_btn.click(
         fn=addr_do_search,
         inputs=[addr_query],
         outputs=[addr_candidates, addr_radio, addr_err, chosen_text, chosen_label]
     )
 
-    # pick radio -> chosen_label(State) 저장
     addr_radio.change(fn=on_radio_change, inputs=[addr_radio], outputs=[chosen_text, chosen_label])
 
-    # confirm
     addr_confirm_btn.click(
         fn=confirm_addr_wrap_by_label,
         inputs=[addr_candidates, chosen_label, addr_detail_in],
@@ -718,11 +794,9 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         ]
     )
 
-    # show chosen place in main
     addr_confirmed.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
     addr_detail.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
 
-    # create
     main_create.click(
         fn=create_space_db,
         inputs=[activity_text, start_hm, dur_h, dur_m, capacity_unlimited, cap_max, photo_pil,
@@ -730,3 +804,6 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         outputs=[main_msg, home_html, map_html, main_overlay, main_sheet, main_footer]
     )
 
+# Render용 실행
+if __name__ == "__main__":
+    demo.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "7860")))
