@@ -337,13 +337,15 @@ def show_chosen_place(addr_confirmed, addr_detail):
 def add_favorite(favs, activity_text):
     act = (activity_text or "").strip()
     favs = list(favs or [])
+
     if not act:
         return favs, "⚠️ 활동을 입력한 뒤 추가하면 된다.", gr.update(choices=favs, value=None)
-    
-    if act not in favs:
-    favs.append(act)
 
-    _safe_save_json(FAVS_PATH, favs)  # ✅ 저장
+    if act not in favs:
+        favs.append(act)
+
+    _safe_save_json(FAVS_PATH, favs)
+
     return favs, f"✅ '{act}'을(를) 자주 하는 활동에 추가했다.", gr.update(choices=favs, value=None)
 
 def use_favorite(label):
@@ -635,5 +637,6 @@ with gr.Blocks(css=CSS, title="Oseyo 모바일 MVP (Colab)") as demo:
 
 if __name__ == "__main__":
     demo.launch(share=True, debug=True)
+
 
 
