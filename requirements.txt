@@ -1,0 +1,6 @@
+gradio
+folium
+requests
+pillow
+fastapi
+uvicorn
