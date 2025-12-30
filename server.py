@@ -1,11 +1,22 @@
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import gradio as gr
-
-from app import demo  # app.py에서 만든 gradio Blocks 객체
+from app import demo
 
 app = FastAPI()
+
+# static 폴더 제공 (manifest, sw.js 등)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# ✅ 루트로 들어오면 /app으로 보내기
+@app.get("/")
+def root():
+    return RedirectResponse(url="/app")
+
+# ✅ Gradio는 /app에 마운트
+app = gr.mount_gradio_app(app, demo, path="/app")
+
 
 # 1) 정적파일 서빙: /static 아래로 manifest, sw, icons 제공
 app.mount("/static", StaticFiles(directory="static"), name="static")
