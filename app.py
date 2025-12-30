@@ -63,9 +63,13 @@ def b64_to_data_uri(b64_str):
 # =========================
 # DB (SQLite)
 # =========================
-DATA_DIR = os.getenv("OSEYO_DATA_DIR", "/var/data")
+# Render에서 디스크가 아직 없으면 /tmp를 사용 (임시)
+DEFAULT_DIR = "/var/data" if os.path.isdir("/var/data") else "/tmp/oseyo"
+DATA_DIR = os.getenv("OSEYO_DATA_DIR", DEFAULT_DIR)
+
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "oseyo.db")
+
 
 def db_conn():
     # check_same_thread=False: Gradio/uvicorn 멀티스레드 대비
@@ -725,3 +729,4 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
                 addr_confirmed, addr_detail, addr_lat, addr_lng],
         outputs=[main_msg, home_html, map_html, main_overlay, main_sheet, main_footer]
     )
+
