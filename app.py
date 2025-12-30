@@ -5,6 +5,34 @@ import requests
 import folium
 from PIL import Image
 import gradio as gr
+import json
+import numpy as np
+
+# ===== persistence =====
+# Render에서 디스크를 붙이면 이 경로를 디스크 마운트 경로로 바꾸면 됨
+# 예: /var/data (Render persistent disk) 같은 곳
+DATA_DIR = os.getenv("OSEYO_DATA_DIR", ".")
+SPACES_PATH = os.path.join(DATA_DIR, "spaces.json")
+FAVS_PATH   = os.path.join(DATA_DIR, "favs.json")
+
+def _safe_load_json(path, default):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except:
+        pass
+    return default
+
+def _safe_save_json(path, data):
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except:
+        pass
 
 # ---- timezone (KST) ----
 os.environ["TZ"] = "Asia/Seoul"
@@ -36,7 +64,18 @@ def image_np_to_b64(img_np):
     if img_np is None:
         return ""
     try:
-        im = Image.fromarray(img_np.astype("uint8"))
+        arr = img_np
+
+        # float/다른 dtype이면 0~255로 보정 후 uint8
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype("uint8")
+
+        # (H,W,4) RGBA면 RGB로 변환
+        if len(arr.shape) == 3 and arr.shape[2] == 4:
+            im = Image.fromarray(arr, "RGBA").convert("RGB")
+        else:
+            im = Image.fromarray(arr)
+
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=85)
         return base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -49,10 +88,10 @@ def b64_to_data_uri(b64_str):
 DURATIONS = [15, 30, 45, 60]
 
 def seed_spaces():
-    return []
+    return _safe_load_json(SPACES_PATH, [])
 
 def seed_favorites():
-    return []
+    return _safe_load_json(FAVS_PATH, [])
 
 def active_spaces(spaces):
     t = now_kst()
@@ -300,8 +339,11 @@ def add_favorite(favs, activity_text):
     favs = list(favs or [])
     if not act:
         return favs, "⚠️ 활동을 입력한 뒤 추가하면 된다.", gr.update(choices=favs, value=None)
+    
     if act not in favs:
-        favs.append(act)
+    favs.append(act)
+
+    _safe_save_json(FAVS_PATH, favs)  # ✅ 저장
     return favs, f"✅ '{act}'을(를) 자주 하는 활동에 추가했다.", gr.update(choices=favs, value=None)
 
 def use_favorite(label):
@@ -320,12 +362,16 @@ def create_space_and_close(
 
     if not addr_confirmed or addr_lat is None or addr_lng is None:
         return spaces, "⚠️ 장소를 선택해 달라. (장소 검색하기)", render_home(spaces), draw_map(spaces), gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)
-
-    t = now_kst().replace(second=0, microsecond=0)
+    
+    t_now = now_kst().replace(second=0, microsecond=0)
+    t = t_now
     parsed = safe_parse_hm(start_hm)
     if parsed is not None:
         h, m = parsed
         t = t.replace(hour=h, minute=m)
+        # 과거면 지금으로 보정 (안 그러면 active_spaces 필터에서 바로 사라질 수 있음)
+        if t < t_now:
+            t = t_now
 
     end = t + timedelta(minutes=int(duration))
     new_id = uuid.uuid4().hex[:8]
@@ -350,6 +396,8 @@ def create_space_and_close(
     }
 
     spaces2 = list(spaces) + [new_space]
+    _safe_save_json(SPACES_PATH, spaces2)  # ✅ 저장
+    
     msg = f"✓ '{new_space['title']}'이(가) 열렸다. (ID: {new_id})"
     return spaces2, msg, render_home(spaces2), draw_map(spaces2), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
