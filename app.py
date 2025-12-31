@@ -36,6 +36,7 @@ def safe_parse_hm(hm: str):
     return None
 
 def image_to_b64(img):
+    """gr.Image(type='pil') 또는 numpy가 들어와도 안전히 JPEG b64로 저장"""
     if img is None:
         return ""
     try:
@@ -73,7 +74,6 @@ def _dir_writable(path: str) -> bool:
     except:
         return False
 
-# Render Disk가 /var/data 로 붙으면 여기 writable 됨
 PREFERRED_DIR = os.getenv("OSEYO_DATA_DIR", "/var/data")
 if _dir_writable(PREFERRED_DIR):
     DATA_DIR = PREFERRED_DIR
@@ -352,7 +352,7 @@ def draw_map_from_db():
     return make_map_html(active_spaces(spaces), center=(36.0190, 129.3435), zoom=13)
 
 # =========================
-# 카드 렌더 (삭제 버튼 포함)
+# 카드 렌더 (스샷 배치대로)
 # =========================
 def banner_html():
     if PERSISTENT:
@@ -394,7 +394,6 @@ def render_home_from_db():
         photo_uri = b64_to_data_uri(s.get("photo_b64",""))
         img = f"<img class='thumb' src='{photo_uri}' alt='photo' />" if photo_uri else "<div class='thumb placeholder'></div>"
 
-        # 삭제 버튼: /api/delete?id=... 호출 후 새로고침
         out.append(f"""
         <div class="card rowcard">
           <div class="left">
@@ -404,15 +403,16 @@ def render_home_from_db():
             {detail_line}
             <div class="muted">{cap}</div>
             <div class="idline">ID: {s['id']}</div>
-            <div class="actions">
-              <button class="btn-del" onclick="oseyoDelete('{s['id']}')">삭제</button>
-            </div>
           </div>
+
           <div class="right">
             {img}
           </div>
+
+          <button class="btn-del" onclick="oseyoDelete('{s['id']}')">삭제</button>
         </div>
         """)
+
     return "\n".join(out)
 
 # =========================
@@ -517,7 +517,7 @@ def create_space_db(
     return msg, render_home_from_db(), draw_map_from_db(), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
 # =========================
-# CSS + JS (FAB / 삭제)
+# CSS + JS (FAB을 body에 붙여서 진짜 fixed)
 # =========================
 CSS = r"""
 :root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --accent:#111; --card:#ffffffcc; --orange:#FF6A00; --danger:#ef4444; }
@@ -527,33 +527,41 @@ html, body { width:100%; max-width:100%; overflow-x:hidden !important; }
 * { box-sizing: border-box !important; }
 .gradio-container * { max-width:100% !important; }
 
-.banner{ max-width: 900px; margin: 10px auto 6px; padding: 10px 12px; border-radius: 14px; font-size: 13px; line-height:1.5; }
+.banner{ max-width: 1200px; margin: 10px auto 6px; padding: 10px 12px; border-radius: 14px; font-size: 13px; line-height:1.5; }
 .banner.ok{ background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; }
 .banner.warn{ background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; }
 
-.card{ background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px; margin: 12px auto; max-width: 900px; }
-.card.empty{ max-width: 600px; }
+.card{
+  position: relative;           /* 삭제 버튼 absolute용 */
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  margin: 12px auto;
+  max-width: 1200px;            /* 스샷처럼 오른쪽 공간 크게 확보 */
+}
+.card.empty{ max-width: 700px; }
 .h{ font-size: 16px; font-weight: 900; color: var(--ink); margin-bottom: 6px; }
 .p{ font-size: 13px; color: var(--muted); line-height: 1.6; }
 
-.rowcard{ display:flex; gap: 14px; align-items: stretch; }
-.rowcard .left{ flex: 1; min-width: 0; display:flex; flex-direction:column; }
-.rowcard .right{ width: 180px; flex: 0 0 180px; display:flex; align-items:center; justify-content:center; }
+/* ===== 스샷 배치 핵심: 왼쪽 텍스트 / 오른쪽 큰 이미지 ===== */
+.rowcard{
+  display: grid;
+  grid-template-columns: 1fr minmax(320px, 560px);  /* 오른쪽이 크게 차지 */
+  gap: 18px;
+  align-items: start;
+  padding-right: 86px; /* 오른쪽 아래 삭제 버튼 자리 확보 */
+}
+.rowcard .left{ min-width: 0; }
+.rowcard .right{ width: 100%; }
+
 .title{ font-size: 16px; font-weight: 900; color: var(--ink); margin-bottom: 6px; }
 .muted{ font-size: 13px; color: var(--muted); line-height: 1.55; }
 .idline{ margin-top: 8px; font-size: 12px; color:#9CA3AF; }
-.actions{ margin-top: auto; display:flex; justify-content:flex-end; padding-top: 10px; }
-.btn-del{
-  appearance:none; border:0; cursor:pointer;
-  background: var(--danger); color:#fff;
-  font-weight:900; font-size:13px;
-  padding: 10px 12px;
-  border-radius: 12px;
-}
 
 .thumb{
   width: 100%;
-  height: 130px;
+  height: 220px;                 /* 오른쪽 영역을 크게 */
   object-fit: cover;
   border-radius: 14px;
   border: 1px solid var(--line);
@@ -562,15 +570,45 @@ html, body { width:100%; max-width:100%; overflow-x:hidden !important; }
 }
 .thumb.placeholder{
   width: 100%;
-  height: 130px;
+  height: 220px;
   border-radius: 14px;
   border: 1px dashed var(--line);
   background: rgba(255,255,255,0.6);
 }
 
+/* 삭제 버튼: 카드 오른쪽 아래 고정 */
+.btn-del{
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  appearance:none;
+  border:0;
+  cursor:pointer;
+  background: var(--danger);
+  color:#fff;
+  font-weight:900;
+  font-size:13px;
+  padding: 10px 14px;
+  border-radius: 12px;
+}
+
+/* 모바일에서는 세로로 */
+@media (max-width: 820px){
+  .rowcard{
+    grid-template-columns: 1fr;
+    padding-right: 14px;
+  }
+  .thumb{ height: 180px; }
+  .btn-del{
+    position: static;
+    width: 100%;
+    margin-top: 10px;
+  }
+}
+
 /* 지도 탭 화면 꽉차게 */
 .mapWrap{ width: 100vw; max-width: 100vw; margin: 0; padding: 0; overflow:hidden; }
-.mapFrame{ width: 100vw; height: calc(100vh - 180px); border: 0; border-radius: 0; }
+.mapFrame{ width: 100vw; height: calc(100vh - 170px); border: 0; border-radius: 0; }
 
 /* 모달 */
 .oseyo_overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 99990; }
@@ -607,26 +645,6 @@ html, body { width:100%; max-width:100%; overflow-x:hidden !important; }
   background: #fff !important;
 }
 .oseyo_footer .primary button{ background: var(--orange) !important; color:#fff !important; border:0 !important; }
-
-/* 진짜 FAB(오른쪽 하단 고정 원형) */
-#oseyo_fab_ui{
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  width: 58px;
-  height: 58px;
-  border-radius: 50%;
-  border: 0;
-  background: var(--accent);
-  color: #FAF9F6;
-  font-size: 34px;
-  font-weight: 900;
-  line-height: 58px;
-  text-align:center;
-  cursor:pointer;
-  z-index: 200000;
-  box-shadow: 0 14px 30px rgba(0,0,0,0.35);
-}
 """
 
 JS = r"""
@@ -635,21 +653,52 @@ window.oseyoDelete = async function(id){
   if(!confirm("이 이벤트를 삭제하겠습니까?")) return;
   try{
     const res = await fetch(`/api/delete?id=${encodeURIComponent(id)}`, {method:"POST"});
-    if(!res.ok){
-      alert("삭제 실패");
-      return;
-    }
-    // Gradio state 리렌더가 아니라 "DB 기반"이라 그냥 새로고침하면 됨
+    if(!res.ok){ alert("삭제 실패"); return; }
     location.reload();
   }catch(e){
     alert("삭제 실패(네트워크)");
   }
-}
+};
 
-window.oseyoOpenModal = function(){
-  const btn = document.querySelector("#fab_hidden button");
-  if(btn) btn.click();
-}
+// ====== FAB을 Gradio 밖(body)에 붙여서 '진짜' 오른쪽 하단 고정 ======
+(function(){
+  function ensureFab(){
+    if(document.getElementById("oseyo_fab_ui")) return;
+
+    const fab = document.createElement("button");
+    fab.id = "oseyo_fab_ui";
+    fab.innerText = "+";
+    fab.style.position = "fixed";
+    fab.style.right = "18px";
+    fab.style.bottom = "18px";
+    fab.style.width = "58px";
+    fab.style.height = "58px";
+    fab.style.borderRadius = "50%";
+    fab.style.border = "0";
+    fab.style.background = "#111";
+    fab.style.color = "#FAF9F6";
+    fab.style.fontSize = "34px";
+    fab.style.fontWeight = "900";
+    fab.style.lineHeight = "58px";
+    fab.style.textAlign = "center";
+    fab.style.cursor = "pointer";
+    fab.style.zIndex = "999999";
+    fab.style.boxShadow = "0 14px 30px rgba(0,0,0,0.35)";
+
+    fab.onclick = () => {
+      const hidden = document.querySelector("#fab_hidden button");
+      if(hidden) hidden.click();
+    };
+
+    document.body.appendChild(fab);
+  }
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", ensureFab);
+  }else{
+    ensureFab();
+  }
+})();
 </script>
 """
 
@@ -657,7 +706,6 @@ window.oseyoOpenModal = function(){
 # Gradio UI
 # =========================
 with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
-    # FastAPI app (for delete API)
     app = demo.app
 
     # place states
@@ -673,7 +721,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     gr.HTML(JS)
 
     gr.HTML("""
-    <div style="max-width:900px;margin:0 auto;padding:16px 10px 6px;text-align:center;">
+    <div style="max-width:1200px;margin:0 auto;padding:16px 10px 6px;text-align:center;">
       <div style="font-size:26px;font-weight:900;color:#1F2937;letter-spacing:-0.2px;">지금, 열려 있습니다</div>
       <div style="margin-top:6px;font-size:13px;color:#6B7280;">원하시면 오세요</div>
     </div>
@@ -687,8 +735,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
             map_refresh = gr.Button("지도 새로고침")
             map_html = gr.HTML(value=draw_map_from_db())
 
-    # 화면 위에 FAB UI만 올리고, 실제 동작은 숨겨진 gr.Button으로 트리거
-    gr.HTML("<button id='oseyo_fab_ui' onclick='oseyoOpenModal()'>+</button>")
+    # 숨겨진 FAB 트리거(진짜 FAB는 JS가 body에 붙임)
     fab_hidden = gr.Button("FAB", elem_id="fab_hidden", visible=False)
 
     # ===== MAIN MODAL =====
@@ -804,6 +851,5 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         outputs=[main_msg, home_html, map_html, main_overlay, main_sheet, main_footer]
     )
 
-# Render용 실행
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "7860")))
