@@ -645,20 +645,37 @@ html, body { width:100%; max-width:100%; overflow-x:hidden !important; }
   background: #fff !important;
 }
 .oseyo_footer .primary button{ background: var(--orange) !important; color:#fff !important; border:0 !important; }
+/* ====== FIXED(플로팅) 깨짐 방지: Gradio 상위 컨테이너 transform 제거 ====== */
+body, html { overflow-x: hidden !important; }
+.gradio-container, .contain, .wrap { transform: none !important; }
+
+/* ====== 오른쪽 하단 플로팅 FAB ====== */
+#oseyo_fab{
+  position: fixed !important;
+  right: 22px !important;
+  bottom: 22px !important;
+  z-index: 999999 !important;
+  width: 64px !important;
+  height: 64px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+#oseyo_fab button{
+  width: 64px !important;
+  height: 64px !important;
+  min-width: 64px !important;
+  border-radius: 50% !important;
+  border: 0 !important;
+  background: #111 !important;
+  color: #FAF9F6 !important;
+  font-size: 36px !important;
+  font-weight: 900 !important;
+  line-height: 64px !important;
+  box-shadow: 0 14px 30px rgba(0,0,0,0.35) !important;
+}
 """
 
-JS = r"""
-<script>
-window.oseyoDelete = async function(id){
-  if(!confirm("이 이벤트를 삭제하겠습니까?")) return;
-  try{
-    const res = await fetch(`/api/delete?id=${encodeURIComponent(id)}`, {method:"POST"});
-    if(!res.ok){ alert("삭제 실패"); return; }
-    location.reload();
-  }catch(e){
-    alert("삭제 실패(네트워크)");
-  }
-};
 
 // ====== FAB을 Gradio 밖(body)에 붙여서 '진짜' 오른쪽 하단 고정 ======
 (function(){
@@ -718,8 +735,6 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     addr_candidates = gr.State([])
     chosen_label = gr.State("")
 
-    gr.HTML(JS)
-
     gr.HTML("""
     <div style="max-width:1200px;margin:0 auto;padding:16px 10px 6px;text-align:center;">
       <div style="font-size:26px;font-weight:900;color:#1F2937;letter-spacing:-0.2px;">지금, 열려 있습니다</div>
@@ -736,7 +751,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
             map_html = gr.HTML(value=draw_map_from_db())
 
     # 숨겨진 FAB 트리거(진짜 FAB는 JS가 body에 붙임)
-    fab_hidden = gr.Button("FAB", elem_id="fab_hidden", visible=False)
+    fab = gr.Button("+", elem_id="oseyo_fab", visible=True)
 
     # ===== MAIN MODAL =====
     main_overlay = gr.HTML("<div class='oseyo_overlay'></div>", visible=False)
@@ -799,7 +814,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     refresh_btn.click(fn=render_home_from_db, inputs=None, outputs=home_html)
     map_refresh.click(fn=draw_map_from_db, inputs=None, outputs=map_html)
 
-    fab_hidden.click(fn=open_main_sheet, inputs=None, outputs=[main_overlay, main_sheet, main_footer, main_msg, start_hm])
+    fab.click(fn=open_main_sheet, inputs=None, outputs=[main_overlay, main_sheet, main_footer, main_msg, start_hm])
     main_close.click(fn=close_main_sheet, inputs=None, outputs=[main_overlay, main_sheet, main_footer, main_msg])
 
     add_act_btn.click(fn=add_favorite_db, inputs=[activity_text], outputs=[fav_msg, fav_radio])
@@ -853,3 +868,4 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "7860")))
+
