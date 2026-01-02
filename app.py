@@ -1,11 +1,8 @@
 # =========================================================
 # OSEYO — FINAL STABLE (Render + Gradio + FastAPI)
-# ✅ DB: /var/data SQLite + 자동 마이그레이션(스키마 꼬여도 안죽음)
-# ✅ 모달: 부모 레이어 단일 토글 → 잔상 0%
-# ✅ 가로 스크롤: 완전 차단
-# ✅ 일시: gr.DateTime (캘린더 + 24시간 + 60분)
-# ✅ 주소: Kakao 키워드 검색(POI → 표준 주소/좌표)
-# ✅ 삭제: 카드 삭제 버튼 /delete/{id}
+# - 부모 레이어 토글로 잔상 0%
+# - Kakao 키워드 검색 → 라디오 선택 → 선택완료 시 메인 복귀
+# - Render Disk: /var/data SQLite
 # =========================================================
 
 import os, uuid, base64, io, sqlite3
@@ -149,15 +146,10 @@ def db_insert_space(space: dict):
             capacity_enabled, capacity_max, hidden, created_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
-            space["id"],
-            space["title"],
-            space.get("photo_b64",""),
-            space["start_iso"],
-            space["end_iso"],
-            space["address_confirmed"],
-            space.get("address_detail",""),
-            float(space["lat"]),
-            float(space["lng"]),
+            space["id"], space["title"], space.get("photo_b64",""),
+            space["start_iso"], space["end_iso"],
+            space["address_confirmed"], space.get("address_detail",""),
+            float(space["lat"]), float(space["lng"]),
             1 if space.get("capacityEnabled") else 0,
             space.get("capacityMax"),
             1 if space.get("hidden") else 0,
@@ -266,9 +258,9 @@ def kakao_keyword_search(q: str, size=12):
 def addr_do_search(query):
     cands, err = kakao_keyword_search(query, size=12)
     if err:
-        return (cands, gr.update(choices=[], value=None), err, "선택: 없음")
+        return cands, gr.update(choices=[], value=None), err, "선택: 없음"
     labels = [c["label"] for c in cands]
-    return (cands, gr.update(choices=labels, value=None), "", "선택: 없음")
+    return cands, gr.update(choices=labels, value=None), "", "선택: 없음"
 
 def on_radio_change(label):
     if not label:
@@ -278,7 +270,7 @@ def on_radio_change(label):
 def confirm_addr_by_label(cands, label, detail):
     label = (label or "").strip()
     if not label:
-        return ("⚠️ 주소 후보를 선택해 달라.", "", "", None, None)
+        return "⚠️ 주소 후보를 선택해 달라.", "", "", None, None
 
     chosen = None
     for c in (cands or []):
@@ -287,11 +279,11 @@ def confirm_addr_by_label(cands, label, detail):
             break
 
     if not chosen:
-        return ("⚠️ 선택한 주소를 다시 선택해 달라.", "", "", None, None)
+        return "⚠️ 선택한 주소를 다시 선택해 달라.", "", "", None, None
 
     confirmed = chosen["label"]
     det = (detail or "").strip()
-    return ("✅ 주소가 선택되었다.", confirmed, det, chosen["lat"], chosen["lng"])
+    return "✅ 주소가 선택되었다.", confirmed, det, chosen["lat"], chosen["lng"]
 
 def show_chosen_place(addr_confirmed, addr_detail):
     if not addr_confirmed:
@@ -331,7 +323,6 @@ def make_map_html(items, center=(36.0190, 129.3435), zoom=13):
                   <div style="color:#6B7280;margin-top:4px;">{s['address_confirmed']}</div>
                   {detail_line}
                   <div style="color:#6B7280;margin-top:4px;">{cap}</div>
-                  <div style="color:#9CA3AF;font-size:12px;margin-top:8px;">ID: {s['id']}</div>
                 </div>
                 """
                 folium.Marker([s["lat"], s["lng"]], tooltip=s["title"], popup=folium.Popup(popup, max_width=360)).add_to(m)
@@ -398,58 +389,48 @@ def render_home():
 
 
 # -------------------------
-# Modal open/close (부모 레이어만 토글)
+# Modal control (부모 레이어만 토글)
 # -------------------------
 def open_main():
     st = now_kst().replace(second=0, microsecond=0)
     en = st + timedelta(minutes=30)
-    return (
-        gr.update(visible=True),  # main_layer
-        gr.update(visible=False), # addr_layer
-        st, en, "",               # start_dt, end_dt, main_msg
-    )
+    return gr.update(visible=True), gr.update(visible=False), st, en, "", ""
 
 def close_all():
-    return (
-        gr.update(visible=False), # main_layer
-        gr.update(visible=False), # addr_layer
-        "", ""                    # main_msg, addr_msg
-    )
+    return gr.update(visible=False), gr.update(visible=False), "", ""
 
 def go_addr():
+    # 주소 모달 열 때 초기화 (라디오/에러/선택표시/상세)
     return (
-        gr.update(visible=False), # main_layer
-        gr.update(visible=True),  # addr_layer
-        [],                       # candidates
-        gr.update(choices=[], value=None), # radio reset
-        "",                       # addr_err
-        "선택: 없음",              # chosen_text
-        "",                       # addr_msg
-        ""                        # detail reset
+        gr.update(visible=False),
+        gr.update(visible=True),
+        [],                                 # candidates reset
+        gr.update(choices=[], value=None),   # radio reset
+        "",                                 # addr_err
+        "선택: 없음",                        # chosen_text
+        "",                                 # addr_msg
+        gr.update(value="")                 # detail reset
     )
 
 def back_main():
-    return (
-        gr.update(visible=True),  # main_layer
-        gr.update(visible=False), # addr_layer
-        ""                        # addr_msg
-    )
+    return gr.update(visible=True), gr.update(visible=False), ""
+
+def confirm_and_back(cands, label, detail):
+    msg, conf, det, la, ln = confirm_addr_by_label(cands, label, detail)
+    if conf and la is not None and ln is not None:
+        # 성공이면 메인으로 복귀
+        return msg, conf, det, la, ln, gr.update(visible=True), gr.update(visible=False)
+    # 실패이면 주소 모달 유지
+    return msg, conf, det, la, ln, gr.update(visible=False), gr.update(visible=True)
 
 
 # -------------------------
 # Create
 # -------------------------
 def create_and_close(
-    activity_text,
-    start_dt_val,
-    end_dt_val,
-    capacity_unlimited,
-    cap_max,
-    photo_np,
-    addr_confirmed,
-    addr_detail,
-    addr_lat,
-    addr_lng
+    activity_text, start_dt_val, end_dt_val,
+    capacity_unlimited, cap_max, photo_np,
+    addr_confirmed, addr_detail, addr_lat, addr_lng
 ):
     try:
         act = (activity_text or "").strip()
@@ -498,7 +479,7 @@ def create_and_close(
 
 
 # -------------------------
-# CSS (모달은 sheet/footer 자체에 fixed, 잔상은 부모 레이어 토글로 해결)
+# CSS (라디오 옵션 가시성 + 잔상 제거 구조)
 # -------------------------
 CSS = r"""
 :root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --card:#ffffffcc; --danger:#ef4444; }
@@ -549,7 +530,6 @@ html, body { width:100%; max-width:100%; overflow-x:hidden !important; backgroun
   z-index:99990 !important;
 }
 
-/* ✅ 모달 */
 #main_sheet, #addr_sheet{
   position:fixed !important;
   left:50% !important; transform:translateX(-50%) !important;
@@ -566,7 +546,6 @@ html, body { width:100%; max-width:100%; overflow-x:hidden !important; backgroun
   box-shadow:0 -12px 40px rgba(0,0,0,0.25) !important;
 }
 
-/* ✅ 푸터 */
 #main_footer, #addr_footer{
   position:fixed !important;
   left:50% !important; transform:translateX(-50%) !important;
@@ -589,8 +568,9 @@ html, body { width:100%; max-width:100%; overflow-x:hidden !important; backgroun
   width:100% !important; min-width:0 !important;
 }
 
-/* ✅ 라디오 옵션이 안 보이는 문제 방지 */
-#addr_sheet label{ color: var(--ink) !important; }
+/* ✅ 라디오 옵션이 "안 보이는" 상황 강제 해결 */
+#addr_sheet .gradio-container, #addr_sheet { color: var(--ink) !important; }
+#addr_sheet .gr-radio * { color: var(--ink) !important; }
 #addr_sheet .gr-radio label{
   display:flex !important;
   align-items:flex-start !important;
@@ -632,7 +612,6 @@ html, body { width:100%; max-width:100%; overflow-x:hidden !important; backgroun
 with gr.Blocks(title="Oseyo (DB)") as demo:
     gr.HTML(f"<style>{CSS}</style>")
 
-    # state
     addr_confirmed = gr.State("")
     addr_detail = gr.State("")
     addr_lat = gr.State(None)
@@ -656,22 +635,23 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
 
     fab = gr.Button("+", elem_id="oseyo_fab")
 
-    # ✅ 부모 레이어(이것만 토글)
+    # 부모 레이어만 토글
     main_layer = gr.Column(visible=False)
     addr_layer = gr.Column(visible=False)
 
-    # overlays (각 레이어 안에 두면 부모 토글로 같이 꺼짐)
+    # main layer
     with main_layer:
-        main_overlay = gr.HTML("<div class='oseyo_overlay'></div>")
+        gr.HTML("<div class='oseyo_overlay'></div>")
         main_sheet = gr.Column(elem_id="main_sheet")
         main_footer = gr.Row(elem_id="main_footer")
 
+    # addr layer
     with addr_layer:
-        addr_overlay = gr.HTML("<div class='oseyo_overlay'></div>")
+        gr.HTML("<div class='oseyo_overlay'></div>")
         addr_sheet = gr.Column(elem_id="addr_sheet")
         addr_footer = gr.Row(elem_id="addr_footer")
 
-    # main modal
+    # main modal content
     with main_sheet:
         gr.HTML("<div style='font-size:22px;font-weight:900;color:#1F2937;margin:0 0 10px 0;'>열어놓기</div>")
         photo_np = gr.Image(label="사진(선택)", type="numpy")
@@ -688,7 +668,7 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
         main_close = gr.Button("닫기")
         main_create = gr.Button("완료", elem_classes=["primary"])
 
-    # addr modal
+    # addr modal content
     with addr_sheet:
         gr.HTML("<div style='font-size:22px;font-weight:900;color:#1F2937;margin:0 0 10px 0;'>장소 검색</div>")
         addr_query = gr.Textbox(label="주소/장소명", placeholder="예: 포항시청, 영일대 …", lines=1)
@@ -700,6 +680,7 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
         addr_msg = gr.Markdown("")
 
     with addr_footer:
+        addr_close = gr.Button("닫기")
         addr_back = gr.Button("뒤로")
         addr_confirm_btn = gr.Button("주소 선택 완료", elem_classes=["primary"])
 
@@ -710,11 +691,10 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
     refresh_btn.click(fn=render_home, inputs=None, outputs=home_html)
     map_refresh.click(fn=draw_map, inputs=None, outputs=map_html)
 
-    # open main
-    fab.click(fn=open_main, inputs=None, outputs=[main_layer, addr_layer, start_dt, end_dt, main_msg])
-
-    # close all
+    # open / close
+    fab.click(fn=open_main, inputs=None, outputs=[main_layer, addr_layer, start_dt, end_dt, main_msg, addr_msg])
     main_close.click(fn=close_all, inputs=None, outputs=[main_layer, addr_layer, main_msg, addr_msg])
+    addr_close.click(fn=close_all, inputs=None, outputs=[main_layer, addr_layer, main_msg, addr_msg])
 
     # go addr / back
     open_addr_btn.click(
@@ -725,17 +705,14 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
     addr_back.click(fn=back_main, inputs=None, outputs=[main_layer, addr_layer, addr_msg])
 
     # search
-    addr_search_btn.click(fn=addr_do_search, inputs=[addr_query], outputs=[addr_candidates, addr_radio, addr_err, chosen_text])
+    addr_search_btn.click(
+        fn=addr_do_search,
+        inputs=[addr_query],
+        outputs=[addr_candidates, addr_radio, addr_err, chosen_text]
+    )
     addr_radio.change(fn=on_radio_change, inputs=[addr_radio], outputs=[chosen_text])
 
-    # confirm addr (선택 후 자동으로 메인으로 복귀)
-    def confirm_and_back(cands, label, detail):
-        msg, conf, det, la, ln = confirm_addr_by_label(cands, label, detail)
-        # 주소 성공이면 메인 복귀, 실패면 주소에 그대로
-        if conf and la is not None and ln is not None:
-            return msg, conf, det, la, ln, gr.update(visible=True), gr.update(visible=False)
-        return msg, conf, det, la, ln, gr.update(visible=False), gr.update(visible=True)
-
+    # confirm addr -> auto back to main
     addr_confirm_btn.click(
         fn=confirm_and_back,
         inputs=[addr_candidates, addr_radio, addr_detail_in],
