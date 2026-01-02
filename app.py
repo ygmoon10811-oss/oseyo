@@ -32,7 +32,8 @@ from fastapi.responses import RedirectResponse
 # -------------------------
 # CONFIG
 # -------------------------
-KST = ZoneInfo("Asia/Seoul")
+import pytz
+KST = pytz.timezone("Asia/Seoul")
 KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "").strip()  # Render Env에 넣기 권장
 
 def now_kst():
@@ -898,3 +899,4 @@ def delete(space_id: str):
     return RedirectResponse(url="/app", status_code=302)
 
 app = gr.mount_gradio_app(app, demo, path="/app")
+
