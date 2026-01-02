@@ -7,9 +7,14 @@
 # ✅ 주소: Kakao 키워드 검색(POI → 표준 주소/좌표)
 # ✅ 삭제: 카드 삭제 버튼 /delete/{id}
 #
-# 🔧 FIX (주소 선택 마비 해결):
-# - gr.State().change에 의존하지 않고,
-#   "주소 선택 완료" 클릭 이벤트에서 chosen_place_view까지 직접 갱신하도록 변경
+# 🔧 FIX 1 (주소 선택 마비):
+# - gr.State().change에 의존하지 않고, "주소 선택 완료"에서 chosen_place_view까지 직접 갱신
+#
+# 🔧 FIX 2 (뒤로 눌렀더니 빈 흰 박스/모달 껍데기만 남음):
+# - addr_back은 단순 visible 토글이 아니라, 메인 모달을 "재오픈" 방식으로 복구(렌더 강제)
+#
+# 🔧 DEBUG (주소 검색 안될 때 원인 노출):
+# - 카카오 응답 코드/본문 일부를 화면에 표시
 # =========================================================
 
 import os, uuid, base64, io, sqlite3
@@ -237,8 +242,12 @@ def kakao_keyword_search(q: str, size=12):
     q = (q or "").strip()
     if not q:
         return [], "⚠️ 장소/주소를 입력해 달라."
+
+    # ✅ 키 체크 강화
     if not KAKAO_REST_API_KEY:
-        return [], "⚠️ KAKAO_REST_API_KEY가 없다. Render 환경변수에 넣어야 한다."
+        return [], "⚠️ KAKAO_REST_API_KEY가 비어 있다. Render Environment에 'REST API 키'를 넣고 재시작/재배포해 달라."
+    if len(KAKAO_REST_API_KEY) < 10:
+        return [], f"⚠️ KAKAO_REST_API_KEY가 너무 짧다(길이 {len(KAKAO_REST_API_KEY)}). 값이 잘못 들어갔다."
 
     url = "https://dapi.kakao.com/v2/local/search/keyword.json"
     headers = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
@@ -246,13 +255,21 @@ def kakao_keyword_search(q: str, size=12):
 
     try:
         r = requests.get(url, headers=headers, params=params, timeout=12)
+
+        if r.status_code == 401:
+            return [], "⚠️ (401) 인증 실패. 'REST API 키'가 맞는지, 로컬 API가 활성화됐는지 확인해 달라."
+        if r.status_code == 403:
+            return [], "⚠️ (403) 권한 거부. 로컬 API 사용 설정/앱 설정을 확인해 달라."
         if r.status_code == 429:
-            return [], "⚠️ 카카오 검색이 일시적으로 제한되었다(429). 잠시 후 다시 시도해 달라."
+            return [], "⚠️ (429) 카카오 호출 제한. 잠시 후 다시 시도해 달라."
         if r.status_code >= 400:
-            return [], f"⚠️ 카카오 검색 실패 (HTTP {r.status_code})"
+            body = (r.text or "")[:300]
+            return [], f"⚠️ 카카오 검색 실패 (HTTP {r.status_code})\n\n응답 일부:\n```\n{body}\n```"
+
         data = r.json()
+
     except Exception as e:
-        return [], f"⚠️ 네트워크 오류: {type(e).__name__}"
+        return [], f"⚠️ 네트워크/요청 오류: {type(e).__name__}\n\n{repr(e)}"
 
     cands=[]
     for d in (data.get("documents") or []):
@@ -292,14 +309,14 @@ def show_chosen_place(addr_confirmed, addr_detail):
         return f"**선택된 장소:** {addr_confirmed}\n\n상세: {addr_detail}"
     return f"**선택된 장소:** {addr_confirmed}"
 
-# ✅ FIX: chosen_place_view를 confirm에서 직접 갱신한다.
+# ✅ FIX 1: confirm에서 chosen_place_view까지 직접 갱신
 def confirm_addr_by_label(cands, label, detail):
     label = (label or "").strip()
     if not label:
         return (
             "⚠️ 주소 후보를 선택해 달라.",
             "", "", None, None,
-            "**선택된 장소:** *(아직 없음)*",  # chosen_place_view
+            "**선택된 장소:** *(아직 없음)*",
             gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
             gr.update(visible=True),  gr.update(visible=True),  gr.update(visible=True),
         )
@@ -314,7 +331,7 @@ def confirm_addr_by_label(cands, label, detail):
         return (
             "⚠️ 선택한 주소를 다시 선택해 달라.",
             "", "", None, None,
-            "**선택된 장소:** *(아직 없음)*",  # chosen_place_view
+            "**선택된 장소:** *(아직 없음)*",
             gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
             gr.update(visible=True),  gr.update(visible=True),  gr.update(visible=True),
         )
@@ -326,7 +343,7 @@ def confirm_addr_by_label(cands, label, detail):
     return (
         "✅ 주소가 선택되었다.",
         confirmed, det, chosen["lat"], chosen["lng"],
-        chosen_md,  # chosen_place_view
+        chosen_md,
         gr.update(visible=True),  gr.update(visible=True),  gr.update(visible=True),
         gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
     )
@@ -468,12 +485,19 @@ def open_addr():
         ""                        # addr_msg
     )
 
-def back_to_main():
-    """주소 모달 끄고 메인 모달로 복귀"""
+# ✅ FIX 2: 뒤로는 메인 모달을 '재오픈'해 렌더 강제(빈 껍데기 방지)
+def back_to_main(addr_confirmed, addr_detail):
+    st = now_kst().replace(second=0, microsecond=0)
+    en = st + timedelta(minutes=30)
+    chosen_md = show_chosen_place(addr_confirmed, addr_detail)
     return (
-        gr.update(visible=True),  gr.update(visible=True),  gr.update(visible=True),   # main on
-        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),  # addr off
-        ""  # addr_msg
+        # main on
+        gr.update(visible=True), gr.update(visible=True), gr.update(visible=True),
+        # addr off
+        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+        "",         # addr_msg
+        chosen_md,  # chosen_place_view
+        st, en      # start_dt, end_dt (렌더 강제)
     )
 
 
@@ -593,7 +617,7 @@ body, .gradio-container, .contain, .wrap { overflow-x:hidden !important; }
 .mapWrap{ width:100vw; max-width:100vw; margin:0; padding:0; overflow:hidden; }
 .mapFrame{ width:100vw; height: calc(100vh - 140px); border:0; border-radius:0; }
 
-/* 오버레이: 닫으면 반드시 visible=False로 내려감(코드에서 처리) */
+/* 오버레이 */
 .oseyo_overlay{
   position:fixed !important;
   inset:0 !important;
@@ -799,11 +823,17 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
         ]
     )
 
-    # back to main
+    # ✅ back to main (FIX 2)
     addr_back.click(
         fn=back_to_main,
-        inputs=None,
-        outputs=[main_overlay, main_sheet, main_footer, addr_overlay, addr_sheet, addr_footer, addr_msg]
+        inputs=[addr_confirmed, addr_detail],
+        outputs=[
+            main_overlay, main_sheet, main_footer,
+            addr_overlay, addr_sheet, addr_footer,
+            addr_msg,
+            chosen_place_view,
+            start_dt, end_dt
+        ]
     )
 
     # search addr
@@ -819,21 +849,17 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
         outputs=[chosen_text, chosen_label]
     )
 
-    # ✅ confirm addr (FIX: chosen_place_view도 같이 갱신)
+    # ✅ confirm addr (FIX 1: chosen_place_view도 같이 갱신)
     addr_confirm_btn.click(
         fn=confirm_addr_by_label,
         inputs=[addr_candidates, chosen_label, addr_detail_in],
         outputs=[
             addr_msg, addr_confirmed, addr_detail, addr_lat, addr_lng,
-            chosen_place_view,  # ✅ 핵심 FIX
+            chosen_place_view,
             main_overlay, main_sheet, main_footer,
             addr_overlay, addr_sheet, addr_footer
         ]
     )
-
-    # ❌ State.change에 의존하지 않음 (Gradio 버전에 따라 불안정할 수 있어 제거)
-    # addr_confirmed.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
-    # addr_detail.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
 
     # create
     main_create.click(
