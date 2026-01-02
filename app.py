@@ -1,11 +1,11 @@
 # =========================================================
 # OSEYO — FINAL STABLE (Render + Gradio + FastAPI)
-# ✅ DB: /var/data SQLite + 자동 마이그레이션
-# ✅ 모달: 잔상 0% (fixed를 "내부 1st child"에만 적용)
-# ✅ 가로 스크롤 완전 차단
-# ✅ 일시: gr.DateTime
-# ✅ 주소: Kakao 키워드 검색 (라디오 옵션 강제 표시)
-# ✅ 삭제: /delete/{id}
+# ✅ DB: /var/data SQLite + 자동 마이그레이션(스키마 꼬여도 안죽음)
+# ✅ 모달: 부모 레이어 단일 토글 → 잔상 0%
+# ✅ 가로 스크롤: 완전 차단
+# ✅ 일시: gr.DateTime (캘린더 + 24시간 + 60분)
+# ✅ 주소: Kakao 키워드 검색(POI → 표준 주소/좌표)
+# ✅ 삭제: 카드 삭제 버튼 /delete/{id}
 # =========================================================
 
 import os, uuid, base64, io, sqlite3
@@ -65,7 +65,7 @@ def b64_to_data_uri(b64_str):
 
 
 # -------------------------
-# DB
+# DB (Render Disk friendly)
 # -------------------------
 def get_data_dir():
     return "/var/data" if os.path.isdir("/var/data") else os.path.join(os.getcwd(), "data")
@@ -102,7 +102,9 @@ def db_init_and_migrate():
         con.commit()
 
         cols = set(_cols(con))
-        def addcol(sql): con.execute(sql)
+
+        def addcol(sql):
+            con.execute(sql)
 
         if "photo_b64" not in cols: addcol("ALTER TABLE spaces ADD COLUMN photo_b64 TEXT DEFAULT ''")
         if "start_iso" not in cols: addcol("ALTER TABLE spaces ADD COLUMN start_iso TEXT")
@@ -119,7 +121,7 @@ def db_init_and_migrate():
         con.commit()
         cols = set(_cols(con))
 
-        # legacy → new
+        # legacy → new (있을 때만)
         if "photo" in cols:
             con.execute("UPDATE spaces SET photo_b64 = COALESCE(photo_b64, photo, '') WHERE (photo_b64 IS NULL OR photo_b64='')")
         if "start" in cols:
@@ -217,7 +219,7 @@ def active_spaces(spaces):
 
 
 # -------------------------
-# Kakao search
+# Kakao place search
 # -------------------------
 def kakao_keyword_search(q: str, size=12):
     q = (q or "").strip()
@@ -233,7 +235,7 @@ def kakao_keyword_search(q: str, size=12):
     try:
         r = requests.get(url, headers=headers, params=params, timeout=12)
         if r.status_code == 401:
-            return [], "⚠️ (401) 인증 실패. REST API 키가 맞는지 확인해 달라."
+            return [], "⚠️ (401) 인증 실패. REST API 키인지 확인해 달라."
         if r.status_code == 429:
             return [], "⚠️ (429) 호출 제한. 잠시 후 다시 시도해 달라."
         if r.status_code >= 400:
@@ -269,17 +271,14 @@ def addr_do_search(query):
     return (cands, gr.update(choices=labels, value=None), "", "선택: 없음")
 
 def on_radio_change(label):
-    return "선택: 없음" if not label else f"선택: {label}"
-
-def confirm_addr_by_label(cands, label_from_radio, detail):
-    label = (label_from_radio or "").strip()
     if not label:
-        return (
-            "⚠️ 주소 후보를 선택해 달라.",
-            "", "", None, None,
-            gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),  # main off
-            gr.update(visible=True),  gr.update(visible=True),  gr.update(visible=True),   # addr on
-        )
+        return "선택: 없음"
+    return f"선택: {label}"
+
+def confirm_addr_by_label(cands, label, detail):
+    label = (label or "").strip()
+    if not label:
+        return ("⚠️ 주소 후보를 선택해 달라.", "", "", None, None)
 
     chosen = None
     for c in (cands or []):
@@ -288,22 +287,11 @@ def confirm_addr_by_label(cands, label_from_radio, detail):
             break
 
     if not chosen:
-        return (
-            "⚠️ 선택한 주소를 다시 선택해 달라.",
-            "", "", None, None,
-            gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
-            gr.update(visible=True),  gr.update(visible=True),  gr.update(visible=True),
-        )
+        return ("⚠️ 선택한 주소를 다시 선택해 달라.", "", "", None, None)
 
     confirmed = chosen["label"]
     det = (detail or "").strip()
-
-    return (
-        "✅ 주소가 선택되었다.",
-        confirmed, det, chosen["lat"], chosen["lng"],
-        gr.update(visible=True),  gr.update(visible=True),  gr.update(visible=True),   # main on
-        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),  # addr off
-    )
+    return ("✅ 주소가 선택되었다.", confirmed, det, chosen["lat"], chosen["lng"])
 
 def show_chosen_place(addr_confirmed, addr_detail):
     if not addr_confirmed:
@@ -363,6 +351,7 @@ def draw_map():
 
 def render_home():
     items = active_spaces(db_list_spaces())
+
     persistent = os.path.isdir("/var/data")
     banner = (
         f"<div class='banner ok'>✅ 영구저장 모드이다 (DB: {DB_PATH}). 새로고침해도 이벤트가 유지된다.</div>"
@@ -378,12 +367,13 @@ def render_home():
         </div>
         """
 
-    out=[banner]
+    out = [banner]
     for s in items:
         period = fmt_period(s["start_iso"], s["end_iso"])
         cap = f"최대 {s['capacityMax']}명" if s.get("capacityEnabled") else "제한 없음"
         detail = (s.get("address_detail") or "").strip()
         detail_line = f"<div class='muted'>상세: {detail}</div>" if detail else "<div class='muted'>상세: -</div>"
+
         photo_uri = b64_to_data_uri(s.get("photo_b64", ""))
         img = f"<img class='thumb' src='{photo_uri}' />" if photo_uri else "<div class='thumb placeholder'></div>"
 
@@ -403,43 +393,46 @@ def render_home():
           <a class="btn-del" href="/delete/{s['id']}">삭제</a>
         </div>
         """)
+
     return "\n".join(out)
 
 
 # -------------------------
-# Modal open/close (잔상 0%)
+# Modal open/close (부모 레이어만 토글)
 # -------------------------
 def open_main():
     st = now_kst().replace(second=0, microsecond=0)
     en = st + timedelta(minutes=30)
     return (
-        gr.update(visible=True),
-        gr.update(visible=True),
-        gr.update(visible=True),
-        "",
-        st,
-        en,
+        gr.update(visible=True),  # main_layer
+        gr.update(visible=False), # addr_layer
+        st, en, "",               # start_dt, end_dt, main_msg
     )
 
-def close_everything():
+def close_all():
     return (
-        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
-        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
-        "", ""
+        gr.update(visible=False), # main_layer
+        gr.update(visible=False), # addr_layer
+        "", ""                    # main_msg, addr_msg
     )
 
-def open_addr():
+def go_addr():
     return (
-        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),  # main off
-        gr.update(visible=True),  gr.update(visible=True),  gr.update(visible=True),   # addr on
-        [], gr.update(choices=[], value=None), "", "선택: 없음", "", ""
+        gr.update(visible=False), # main_layer
+        gr.update(visible=True),  # addr_layer
+        [],                       # candidates
+        gr.update(choices=[], value=None), # radio reset
+        "",                       # addr_err
+        "선택: 없음",              # chosen_text
+        "",                       # addr_msg
+        ""                        # detail reset
     )
 
-def back_to_main():
+def back_main():
     return (
-        gr.update(visible=True),  gr.update(visible=True),  gr.update(visible=True),
-        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
-        ""
+        gr.update(visible=True),  # main_layer
+        gr.update(visible=False), # addr_layer
+        ""                        # addr_msg
     )
 
 
@@ -447,32 +440,40 @@ def back_to_main():
 # Create
 # -------------------------
 def create_and_close(
-    activity_text, start_dt_val, end_dt_val,
-    capacity_unlimited, cap_max, photo_np,
-    addr_confirmed, addr_detail, addr_lat, addr_lng
+    activity_text,
+    start_dt_val,
+    end_dt_val,
+    capacity_unlimited,
+    cap_max,
+    photo_np,
+    addr_confirmed,
+    addr_detail,
+    addr_lat,
+    addr_lng
 ):
     try:
         act = (activity_text or "").strip()
         if not act:
-            return "⚠️ 활동을 입력해 달라.", render_home(), draw_map(), gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)
+            return "⚠️ 활동을 입력해 달라.", render_home(), draw_map(), gr.update(visible=True)
 
         if (not addr_confirmed) or (addr_lat is None) or (addr_lng is None):
-            return "⚠️ 장소를 선택해 달라. (장소 검색하기)", render_home(), draw_map(), gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)
+            return "⚠️ 장소를 선택해 달라. (장소 검색하기)", render_home(), draw_map(), gr.update(visible=True)
 
         st = normalize_dt(start_dt_val)
         en = normalize_dt(end_dt_val)
         if st is None or en is None:
-            return "⚠️ 시작/종료 일시를 선택해 달라.", render_home(), draw_map(), gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)
+            return "⚠️ 시작/종료 일시를 선택해 달라.", render_home(), draw_map(), gr.update(visible=True)
 
         st = st.astimezone(KST); en = en.astimezone(KST)
         if en <= st:
-            return "⚠️ 종료 일시는 시작 일시보다 뒤여야 한다.", render_home(), draw_map(), gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)
+            return "⚠️ 종료 일시는 시작 일시보다 뒤여야 한다.", render_home(), draw_map(), gr.update(visible=True)
 
         new_id = uuid.uuid4().hex[:8]
         photo_b64 = image_np_to_b64(photo_np)
 
         capacityEnabled = (not bool(capacity_unlimited))
         capacityMax = None if not capacityEnabled else int(min(int(cap_max), 10))
+
         title = act if len(act) <= 24 else act[:24] + "…"
 
         db_insert_space({
@@ -490,28 +491,26 @@ def create_and_close(
             "hidden": False,
         })
 
-        return f"✅ 등록 완료: '{title}'", render_home(), draw_map(), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+        return f"✅ 등록 완료: '{title}'", render_home(), draw_map(), gr.update(visible=False)
 
     except Exception as e:
-        return f"❌ 등록 중 오류: {type(e).__name__}", render_home(), draw_map(), gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)
+        return f"❌ 등록 중 오류: {type(e).__name__}", render_home(), draw_map(), gr.update(visible=True)
 
 
 # -------------------------
-# CSS (핵심 수정: fixed는 내부 1st-child에만 적용)
+# CSS (모달은 sheet/footer 자체에 fixed, 잔상은 부모 레이어 토글로 해결)
 # -------------------------
 CSS = r"""
 :root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --card:#ffffffcc; --danger:#ef4444; }
 
 html, body { width:100%; max-width:100%; overflow-x:hidden !important; background:var(--bg) !important; }
 .gradio-container { background:var(--bg) !important; width:100% !important; max-width:100% !important; overflow-x:hidden !important; }
-body, .gradio-container { overflow-x:hidden !important; }
+.gradio-container * { box-sizing:border-box !important; max-width:100% !important; }
 
-/* 상단 배너 */
 .banner{ max-width:1200px; margin:10px auto 6px; padding:10px 12px; border-radius:14px; font-size:13px; line-height:1.5; }
 .banner.ok{ background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; }
 .banner.warn{ background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; }
 
-/* 카드 */
 .card{ position:relative; background:var(--card); border:1px solid var(--line); border-radius:18px; padding:14px; margin:12px auto; max-width:1200px; }
 .card.empty{ max-width:700px; }
 .h{ font-size:16px; font-weight:900; color:var(--ink); margin-bottom:6px; }
@@ -540,11 +539,9 @@ body, .gradio-container { overflow-x:hidden !important; }
   .btn-del{ position:static; display:block; width:100%; margin-top:10px; text-align:center; }
 }
 
-/* 지도 */
 .mapWrap{ width:100vw; max-width:100vw; margin:0; padding:0; overflow:hidden; }
 .mapFrame{ width:100vw; height: calc(100vh - 140px); border:0; border-radius:0; }
 
-/* 오버레이 */
 .oseyo_overlay{
   position:fixed !important;
   inset:0 !important;
@@ -552,19 +549,8 @@ body, .gradio-container { overflow-x:hidden !important; }
   z-index:99990 !important;
 }
 
-/* ===========================
-   ✅ 핵심: elem_id 바깥(#main_sheet)은 fixed 금지
-   Gradio가 숨기는 "내부 레이어"에 fixed 적용
-   =========================== */
-#main_sheet, #addr_sheet, #main_footer, #addr_footer{
-  position:static !important;
-  background:transparent !important;
-  border:0 !important;
-  padding:0 !important;
-}
-
-/* 모달 내부 레이어 */
-#main_sheet > div, #addr_sheet > div{
+/* ✅ 모달 */
+#main_sheet, #addr_sheet{
   position:fixed !important;
   left:50% !important; transform:translateX(-50%) !important;
   bottom:0 !important;
@@ -580,8 +566,8 @@ body, .gradio-container { overflow-x:hidden !important; }
   box-shadow:0 -12px 40px rgba(0,0,0,0.25) !important;
 }
 
-/* 푸터 내부 레이어 */
-#main_footer > div, #addr_footer > div{
+/* ✅ 푸터 */
+#main_footer, #addr_footer{
   position:fixed !important;
   left:50% !important; transform:translateX(-50%) !important;
   bottom:0 !important;
@@ -592,29 +578,19 @@ body, .gradio-container { overflow-x:hidden !important; }
   z-index:99992 !important;
 }
 
-/* 가로 스크롤 차단 */
-#main_sheet > div, #addr_sheet > div { overflow-x:hidden !important; }
-#main_sheet > div *, #addr_sheet > div *{ max-width:100% !important; box-sizing:border-box !important; }
-#main_sheet > div .gr-row, #addr_sheet > div .gr-row{ flex-wrap:wrap !important; }
-#main_sheet > div .gr-row > *, #addr_sheet > div .gr-row > *{ min-width:0 !important; }
-#main_sheet > div input, #addr_sheet > div input,
-#main_sheet > div textarea, #addr_sheet > div textarea,
-#main_sheet > div select, #addr_sheet > div select{
+/* 가로 스크롤 완전 차단 */
+#main_sheet, #addr_sheet { overflow-x:hidden !important; }
+#main_sheet *, #addr_sheet *{ overflow-x:hidden !important; max-width:100% !important; box-sizing:border-box !important; }
+#main_sheet .gr-row, #addr_sheet .gr-row{ flex-wrap:wrap !important; }
+#main_sheet .gr-row > *, #addr_sheet .gr-row > *{ min-width:0 !important; }
+#main_sheet input, #addr_sheet input,
+#main_sheet textarea, #addr_sheet textarea,
+#main_sheet select, #addr_sheet select{
   width:100% !important; min-width:0 !important;
 }
 
-/* ✅ 라디오 옵션이 안 보이는 문제 강제 해결 */
-#addr_sheet .gradio-radio, 
-#addr_sheet fieldset,
-#addr_sheet .gr-radio{
-  width:100% !important;
-}
-#addr_sheet label{
-  color: var(--ink) !important;
-}
-#addr_sheet input[type="radio"]{
-  transform: scale(1.05);
-}
+/* ✅ 라디오 옵션이 안 보이는 문제 방지 */
+#addr_sheet label{ color: var(--ink) !important; }
 #addr_sheet .gr-radio label{
   display:flex !important;
   align-items:flex-start !important;
@@ -626,9 +602,6 @@ body, .gradio-container { overflow-x:hidden !important; }
   margin:8px 0 !important;
   white-space:normal !important;
   word-break:break-word !important;
-}
-#addr_sheet .gr-radio label span{
-  color:var(--ink) !important;
 }
 
 /* FAB */
@@ -654,11 +627,12 @@ body, .gradio-container { overflow-x:hidden !important; }
 
 
 # -------------------------
-# UI
+# UI (Gradio)
 # -------------------------
 with gr.Blocks(title="Oseyo (DB)") as demo:
     gr.HTML(f"<style>{CSS}</style>")
 
+    # state
     addr_confirmed = gr.State("")
     addr_detail = gr.State("")
     addr_lat = gr.State(None)
@@ -682,15 +656,22 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
 
     fab = gr.Button("+", elem_id="oseyo_fab")
 
-    main_overlay = gr.HTML("<div class='oseyo_overlay'></div>", visible=False)
-    addr_overlay = gr.HTML("<div class='oseyo_overlay'></div>", visible=False)
+    # ✅ 부모 레이어(이것만 토글)
+    main_layer = gr.Column(visible=False)
+    addr_layer = gr.Column(visible=False)
 
-    main_sheet = gr.Column(visible=False, elem_id="main_sheet")
-    main_footer = gr.Row(visible=False, elem_id="main_footer")
+    # overlays (각 레이어 안에 두면 부모 토글로 같이 꺼짐)
+    with main_layer:
+        main_overlay = gr.HTML("<div class='oseyo_overlay'></div>")
+        main_sheet = gr.Column(elem_id="main_sheet")
+        main_footer = gr.Row(elem_id="main_footer")
 
-    addr_sheet = gr.Column(visible=False, elem_id="addr_sheet")
-    addr_footer = gr.Row(visible=False, elem_id="addr_footer")
+    with addr_layer:
+        addr_overlay = gr.HTML("<div class='oseyo_overlay'></div>")
+        addr_sheet = gr.Column(elem_id="addr_sheet")
+        addr_footer = gr.Row(elem_id="addr_footer")
 
+    # main modal
     with main_sheet:
         gr.HTML("<div style='font-size:22px;font-weight:900;color:#1F2937;margin:0 0 10px 0;'>열어놓기</div>")
         photo_np = gr.Image(label="사진(선택)", type="numpy")
@@ -707,6 +688,7 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
         main_close = gr.Button("닫기")
         main_create = gr.Button("완료", elem_classes=["primary"])
 
+    # addr modal
     with addr_sheet:
         gr.HTML("<div style='font-size:22px;font-weight:900;color:#1F2937;margin:0 0 10px 0;'>장소 검색</div>")
         addr_query = gr.Textbox(label="주소/장소명", placeholder="예: 포항시청, 영일대 …", lines=1)
@@ -721,66 +703,53 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
         addr_back = gr.Button("뒤로")
         addr_confirm_btn = gr.Button("주소 선택 완료", elem_classes=["primary"])
 
+    # initial load
     demo.load(fn=render_home, inputs=None, outputs=home_html)
     demo.load(fn=draw_map, inputs=None, outputs=map_html)
 
     refresh_btn.click(fn=render_home, inputs=None, outputs=home_html)
     map_refresh.click(fn=draw_map, inputs=None, outputs=map_html)
 
-    fab.click(fn=open_main, inputs=None, outputs=[main_overlay, main_sheet, main_footer, main_msg, start_dt, end_dt])
+    # open main
+    fab.click(fn=open_main, inputs=None, outputs=[main_layer, addr_layer, start_dt, end_dt, main_msg])
 
-    main_close.click(
-        fn=close_everything,
-        inputs=None,
-        outputs=[main_overlay, main_sheet, main_footer, addr_overlay, addr_sheet, addr_footer, main_msg, addr_msg]
-    )
+    # close all
+    main_close.click(fn=close_all, inputs=None, outputs=[main_layer, addr_layer, main_msg, addr_msg])
 
+    # go addr / back
     open_addr_btn.click(
-        fn=open_addr,
+        fn=go_addr,
         inputs=None,
-        outputs=[
-            main_overlay, main_sheet, main_footer,
-            addr_overlay, addr_sheet, addr_footer,
-            addr_candidates, addr_radio, addr_err,
-            chosen_text, addr_detail_in, addr_msg
-        ]
+        outputs=[main_layer, addr_layer, addr_candidates, addr_radio, addr_err, chosen_text, addr_msg, addr_detail_in]
     )
+    addr_back.click(fn=back_main, inputs=None, outputs=[main_layer, addr_layer, addr_msg])
 
-    addr_back.click(
-        fn=back_to_main,
-        inputs=None,
-        outputs=[main_overlay, main_sheet, main_footer, addr_overlay, addr_sheet, addr_footer, addr_msg]
-    )
-
-    addr_search_btn.click(
-        fn=addr_do_search,
-        inputs=[addr_query],
-        outputs=[addr_candidates, addr_radio, addr_err, chosen_text]
-    )
-
+    # search
+    addr_search_btn.click(fn=addr_do_search, inputs=[addr_query], outputs=[addr_candidates, addr_radio, addr_err, chosen_text])
     addr_radio.change(fn=on_radio_change, inputs=[addr_radio], outputs=[chosen_text])
 
+    # confirm addr (선택 후 자동으로 메인으로 복귀)
+    def confirm_and_back(cands, label, detail):
+        msg, conf, det, la, ln = confirm_addr_by_label(cands, label, detail)
+        # 주소 성공이면 메인 복귀, 실패면 주소에 그대로
+        if conf and la is not None and ln is not None:
+            return msg, conf, det, la, ln, gr.update(visible=True), gr.update(visible=False)
+        return msg, conf, det, la, ln, gr.update(visible=False), gr.update(visible=True)
+
     addr_confirm_btn.click(
-        fn=confirm_addr_by_label,
+        fn=confirm_and_back,
         inputs=[addr_candidates, addr_radio, addr_detail_in],
-        outputs=[
-            addr_msg, addr_confirmed, addr_detail, addr_lat, addr_lng,
-            main_overlay, main_sheet, main_footer,
-            addr_overlay, addr_sheet, addr_footer
-        ]
+        outputs=[addr_msg, addr_confirmed, addr_detail, addr_lat, addr_lng, main_layer, addr_layer]
     )
 
     addr_confirmed.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
     addr_detail.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
 
+    # create
     main_create.click(
         fn=create_and_close,
-        inputs=[
-            activity_text, start_dt, end_dt,
-            capacity_unlimited, cap_max, photo_np,
-            addr_confirmed, addr_detail, addr_lat, addr_lng
-        ],
-        outputs=[main_msg, home_html, map_html, main_overlay, main_sheet, main_footer]
+        inputs=[activity_text, start_dt, end_dt, capacity_unlimited, cap_max, photo_np, addr_confirmed, addr_detail, addr_lat, addr_lng],
+        outputs=[main_msg, home_html, map_html, main_layer]
     )
 
 
