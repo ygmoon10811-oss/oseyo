@@ -17,7 +17,7 @@ from fastapi.responses import RedirectResponse
 # =========================
 # 🔑 KAKAO API KEY
 # =========================
-KAKAO_REST_API_KEY = "여기에_카카오_REST_API_키"
+KAKAO_REST_API_KEY = "c6a56d433bf68434d8e41ff12efafeb3"
 
 # =========================
 # TIMEZONE
@@ -290,3 +290,4 @@ def delete(i):
     return RedirectResponse("/app")
 
 app = gr.mount_gradio_app(app, demo, path="/app")
+
