@@ -7,14 +7,15 @@
 # ✅ 주소: Kakao 키워드 검색(POI → 표준 주소/좌표)
 # ✅ 삭제: 카드 삭제 버튼 /delete/{id}
 #
-# 🔧 FIX 1 (주소 선택 마비):
-# - gr.State().change에 의존하지 않고, "주소 선택 완료"에서 chosen_place_view까지 직접 갱신
+# 🔧 FIX A (라디오 UI 깨짐/빈 박스처럼 보임):
+# - CSS의 input width:100% 룰이 radio/checkbox까지 먹어서 깨지는 문제
+# - radio/checkbox는 제외하도록 CSS를 수정함  ✅
 #
-# 🔧 FIX 2 (뒤로 눌렀더니 빈 흰 박스/모달 껍데기만 남음):
-# - addr_back은 단순 visible 토글이 아니라, 메인 모달을 "재오픈" 방식으로 복구(렌더 강제)
+# 🔧 FIX B (뒤로 눌렀더니 빈 흰 박스/모달 껍데기만 남음):
+# - addr_back은 메인 모달을 '재오픈' 방식으로 렌더 강제 ✅
 #
-# 🔧 DEBUG (주소 검색 안될 때 원인 노출):
-# - 카카오 응답 코드/본문 일부를 화면에 표시
+# 🔧 FIX C (주소 선택 마비/표시 갱신 불안정):
+# - "주소 선택 완료"에서 chosen_place_view까지 직접 갱신 ✅
 # =========================================================
 
 import os, uuid, base64, io, sqlite3
@@ -32,8 +33,7 @@ from fastapi.responses import RedirectResponse
 # -------------------------
 # CONFIG
 # -------------------------
-import pytz
-KST = pytz.timezone("Asia/Seoul")
+KST = ZoneInfo("Asia/Seoul")
 KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "").strip()  # Render Env에 넣기 권장
 
 def now_kst():
@@ -244,7 +244,6 @@ def kakao_keyword_search(q: str, size=12):
     if not q:
         return [], "⚠️ 장소/주소를 입력해 달라."
 
-    # ✅ 키 체크 강화
     if not KAKAO_REST_API_KEY:
         return [], "⚠️ KAKAO_REST_API_KEY가 비어 있다. Render Environment에 'REST API 키'를 넣고 재시작/재배포해 달라."
     if len(KAKAO_REST_API_KEY) < 10:
@@ -310,7 +309,6 @@ def show_chosen_place(addr_confirmed, addr_detail):
         return f"**선택된 장소:** {addr_confirmed}\n\n상세: {addr_detail}"
     return f"**선택된 장소:** {addr_confirmed}"
 
-# ✅ FIX 1: confirm에서 chosen_place_view까지 직접 갱신
 def confirm_addr_by_label(cands, label, detail):
     label = (label or "").strip()
     if not label:
@@ -486,7 +484,6 @@ def open_addr():
         ""                        # addr_msg
     )
 
-# ✅ FIX 2: 뒤로는 메인 모달을 '재오픈'해 렌더 강제(빈 껍데기 방지)
 def back_to_main(addr_confirmed, addr_detail):
     st = now_kst().replace(second=0, microsecond=0)
     en = st + timedelta(minutes=30)
@@ -560,7 +557,6 @@ def create_and_close(
         db_insert_space(new_space)
         msg = f"✅ 등록 완료: '{title}'"
 
-        # ✅ 홈/지도 갱신 + 모달 완전 종료
         return msg, render_home(), draw_map(), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
     except Exception as e:
@@ -677,8 +673,9 @@ body, .gradio-container, .contain, .wrap { overflow-x:hidden !important; }
 #main_sheet .gr-row, #addr_sheet .gr-row{ flex-wrap:wrap !important; }
 #main_sheet .gr-row > *, #addr_sheet .gr-row > *{ min-width:0 !important; }
 
-/* DateTime / input 폭 튐 방지 */
-#main_sheet input, #addr_sheet input,
+/* ✅ FIX A: radio/checkbox는 width:100% 적용 제외 */
+#main_sheet input:not([type="radio"]):not([type="checkbox"]),
+#addr_sheet input:not([type="radio"]):not([type="checkbox"]),
 #main_sheet textarea, #addr_sheet textarea,
 #main_sheet select, #addr_sheet select{
   width:100% !important;
@@ -764,7 +761,6 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
         photo_np = gr.Image(label="사진(선택)", type="numpy")
         activity_text = gr.Textbox(label="활동", placeholder="예: 산책, 커피, 스터디…", lines=1)
 
-        # ✅ DateTime: 캘린더 + 시간/분 선택
         start_dt = gr.DateTime(label="시작 일시", include_time=True)
         end_dt = gr.DateTime(label="종료 일시", include_time=True)
 
@@ -782,7 +778,7 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
     # addr modal
     with addr_sheet:
         gr.HTML("<div style='font-size:22px;font-weight:900;color:#1F2937;margin:0 0 10px 0;'>장소 검색</div>")
-        addr_query = gr.Textbox(label="주소/장소명", placeholder="예: 포항근로복지공단, 포항시청, 영일대 …", lines=1)
+        addr_query = gr.Textbox(label="주소/장소명", placeholder="예: 포항시청, 영일대 …", lines=1)
         addr_search_btn = gr.Button("검색")
         addr_err = gr.Markdown("")
         chosen_text = gr.Markdown("선택: 없음")
@@ -804,7 +800,7 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
     # open main
     fab.click(fn=open_main, inputs=None, outputs=[main_overlay, main_sheet, main_footer, main_msg, start_dt, end_dt])
 
-    # close all (잔상 0%)
+    # close all
     main_close.click(
         fn=close_everything,
         inputs=None,
@@ -824,7 +820,7 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
         ]
     )
 
-    # ✅ back to main (FIX 2)
+    # back to main
     addr_back.click(
         fn=back_to_main,
         inputs=[addr_confirmed, addr_detail],
@@ -850,7 +846,7 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
         outputs=[chosen_text, chosen_label]
     )
 
-    # ✅ confirm addr (FIX 1: chosen_place_view도 같이 갱신)
+    # confirm addr
     addr_confirm_btn.click(
         fn=confirm_addr_by_label,
         inputs=[addr_candidates, chosen_label, addr_detail_in],
@@ -899,4 +895,3 @@ def delete(space_id: str):
     return RedirectResponse(url="/app", status_code=302)
 
 app = gr.mount_gradio_app(app, demo, path="/app")
-
