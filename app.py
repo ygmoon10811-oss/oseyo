@@ -607,6 +607,8 @@ body, .gradio-container, .contain, .wrap { overflow-x:hidden !important; }
 /* ✅ sheets: Group wrapper에 fixed */
 #main_sheet, #addr_sheet{
   position:fixed !important;
+  display:block !important;
+  pointer-events:auto !important;
   left:50% !important; transform:translateX(-50%) !important;
   bottom:0 !important;
   width:min(420px,96vw) !important;
@@ -620,6 +622,7 @@ body, .gradio-container, .contain, .wrap { overflow-x:hidden !important; }
   z-index:99991 !important;
   box-shadow:0 -12px 40px rgba(0,0,0,0.25) !important;
 }
+
 
 /* footer */
 #main_footer, #addr_footer{
@@ -698,10 +701,10 @@ with gr.Blocks(title="Oseyo (DB)") as demo:
     addr_overlay = gr.HTML("", visible=False, elem_id="addr_overlay")
 
     # ✅ 핵심: sheet/foot를 Group으로 (내용 증발 방지)
-    main_sheet = gr.Group(visible=False, elem_id="main_sheet")
-    main_footer = gr.Group(visible=False, elem_id="main_footer")
-    addr_sheet = gr.Group(visible=False, elem_id="addr_sheet")
-    addr_footer = gr.Group(visible=False, elem_id="addr_footer")
+    main_sheet = gr.Box(visible=False, elem_id="main_sheet")
+    main_footer = gr.Box(visible=False, elem_id="main_footer")
+    addr_sheet = gr.Box(visible=False, elem_id="addr_sheet")
+    addr_footer = gr.Box(visible=False, elem_id="addr_footer")
 
     # main modal content
     with main_sheet:
@@ -836,3 +839,4 @@ def delete(space_id: str):
     return RedirectResponse(url="/app", status_code=302)
 
 app = gr.mount_gradio_app(app, demo, path="/app")
+
