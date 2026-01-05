@@ -1,10 +1,13 @@
 # =========================================================
-# OSEYO — FIXED MODAL (Gradio 4.44+ 안정)
-# 핵심 수정(중요):
-# - main_view/addr_view를 sheet 바깥에서 만들면 "접속하자마자" 폼이 본문에 렌더링됨
-# - ✅ main_view/addr_view를 반드시 `with sheet:` 안에서 생성하도록 수정함
-# - + 버튼 => 고정 모달(오버레이+시트+푸터)로 뜸
-# - 카카오 지도 iframe 유지
+# OSEYO — STABLE MODAL + FIXED CREATE + FIXED MAP + FAVORITES
+# (Gradio 4.44+ / Render 배포 안정)
+#
+# Fixes:
+# - FAB(+)가 완료 버튼 가리는 문제: 모달 열리면 FAB 숨김
+# - FAB가 화면 하단에 "바"로 자리 차지하는 문제: wrap height:0 처리
+# - DateTime이 str로 들어오는 케이스 처리(일시 선택하라 버그 해결)
+# - 지도 data: iframe 차단(CSP) 대비: FastAPI로 /kakao_map 서빙
+# - 즐겨찾는 활동 추가/선택 기능(DB 저장)
 # =========================================================
 
 import os, uuid, base64, io, sqlite3, json
@@ -16,7 +19,8 @@ from PIL import Image
 import gradio as gr
 
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi import Request
 
 # -------------------------
 # CONFIG
@@ -29,14 +33,36 @@ def now_kst():
     return datetime.now(KST)
 
 def normalize_dt(v):
+    """
+    Gradio DateTime이 환경에 따라:
+    - datetime 객체로 오기도 하고
+    - '2026-01-05T15:13:00' 같은 문자열로 오기도 함
+    둘 다 처리.
+    """
+    if v is None:
+        return None
+
     if isinstance(v, datetime):
         return v if v.tzinfo else v.replace(tzinfo=KST)
+
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        try:
+            # "2026-01-05 15:13:00" 형태도 올 수 있어 replace 처리
+            s = s.replace(" ", "T")
+            dt = datetime.fromisoformat(s)
+            return dt if dt.tzinfo else dt.replace(tzinfo=KST)
+        except:
+            return None
+
     return None
 
 def fmt_period(st_iso: str, en_iso: str) -> str:
     try:
-        st = datetime.fromisoformat(st_iso)
-        en = datetime.fromisoformat(en_iso)
+        st = datetime.fromisoformat((st_iso or "").replace(" ", "T"))
+        en = datetime.fromisoformat((en_iso or "").replace(" ", "T"))
         if st.tzinfo is None: st = st.replace(tzinfo=KST)
         if en.tzinfo is None: en = en.replace(tzinfo=KST)
         st = st.astimezone(KST); en = en.astimezone(KST)
@@ -74,9 +100,6 @@ DB_PATH = os.path.join(DATA_DIR, "oseyo.db")
 def db_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
-def _cols(con, table="spaces"):
-    return [r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()]
-
 def db_init_and_migrate():
     with db_conn() as con:
         con.execute("""
@@ -96,25 +119,15 @@ def db_init_and_migrate():
             created_at TEXT NOT NULL
         );
         """)
-        con.commit()
 
-        cols = set(_cols(con))
-        def addcol(sql): con.execute(sql)
+        # 즐겨찾기 활동
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS favorites (
+            activity TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        );
+        """)
 
-        if "photo_b64" not in cols: addcol("ALTER TABLE spaces ADD COLUMN photo_b64 TEXT DEFAULT ''")
-        if "start_iso" not in cols: addcol("ALTER TABLE spaces ADD COLUMN start_iso TEXT")
-        if "end_iso" not in cols: addcol("ALTER TABLE spaces ADD COLUMN end_iso TEXT")
-        if "address_confirmed" not in cols: addcol("ALTER TABLE spaces ADD COLUMN address_confirmed TEXT")
-        if "address_detail" not in cols: addcol("ALTER TABLE spaces ADD COLUMN address_detail TEXT DEFAULT ''")
-        if "lat" not in cols: addcol("ALTER TABLE spaces ADD COLUMN lat REAL")
-        if "lng" not in cols: addcol("ALTER TABLE spaces ADD COLUMN lng REAL")
-        if "capacity_enabled" not in cols: addcol("ALTER TABLE spaces ADD COLUMN capacity_enabled INTEGER NOT NULL DEFAULT 0")
-        if "capacity_max" not in cols: addcol("ALTER TABLE spaces ADD COLUMN capacity_max INTEGER")
-        if "hidden" not in cols: addcol("ALTER TABLE spaces ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
-        if "created_at" not in cols: addcol("ALTER TABLE spaces ADD COLUMN created_at TEXT")
-        con.commit()
-
-        con.execute("UPDATE spaces SET created_at = COALESCE(created_at, ?) WHERE created_at IS NULL OR created_at=''", (now_kst().isoformat(),))
         con.commit()
 
 db_init_and_migrate()
@@ -187,8 +200,8 @@ def active_spaces(spaces):
         if s.get("lat") is None or s.get("lng") is None:
             continue
         try:
-            st = datetime.fromisoformat(s["start_iso"])
-            en = datetime.fromisoformat(s["end_iso"])
+            st = datetime.fromisoformat((s["start_iso"] or "").replace(" ", "T"))
+            en = datetime.fromisoformat((s["end_iso"] or "").replace(" ", "T"))
             if st.tzinfo is None: st = st.replace(tzinfo=KST)
             if en.tzinfo is None: en = en.replace(tzinfo=KST)
             st = st.astimezone(KST); en = en.astimezone(KST)
@@ -197,6 +210,20 @@ def active_spaces(spaces):
         except:
             pass
     return out
+
+# favorites
+def db_list_favorites():
+    with db_conn() as con:
+        rows = con.execute("SELECT activity FROM favorites ORDER BY created_at DESC").fetchall()
+    return [r[0] for r in rows if r and r[0]]
+
+def db_add_favorite(activity: str):
+    a = (activity or "").strip()
+    if not a:
+        return
+    with db_conn() as con:
+        con.execute("INSERT OR IGNORE INTO favorites(activity, created_at) VALUES (?,?)", (a, now_kst().isoformat()))
+        con.commit()
 
 
 # -------------------------
@@ -297,17 +324,11 @@ def render_home():
 
 
 # -------------------------
-# Kakao map iframe (JS)
+# 지도: FastAPI에서 HTML로 직접 서빙 (CSP/data: 차단 대응)
 # -------------------------
-def make_kakao_map_iframe(items, center=(36.0190, 129.3435), level=6):
-    if not KAKAO_JAVASCRIPT_KEY:
-        return """
-        <div class="card empty" style="max-width:900px;">
-          <div class="h" style="color:#b91c1c;">KAKAO_JAVASCRIPT_KEY가 없다</div>
-          <div class="p">Render 환경변수에 KAKAO_JAVASCRIPT_KEY를 넣어야 카카오 지도가 뜬다.</div>
-        </div>
-        """
-
+def map_points_payload():
+    spaces = db_list_spaces()
+    items = active_spaces(spaces)
     points = []
     for s in items:
         points.append({
@@ -319,123 +340,64 @@ def make_kakao_map_iframe(items, center=(36.0190, 129.3435), level=6):
             "period": fmt_period(s.get("start_iso",""), s.get("end_iso","")),
             "id": s["id"],
         })
+    return points
 
-    html = f"""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<style>
-  html,body{{margin:0;height:100%;}}
-  #map{{width:100%;height:100%;}}
-  .iw{{font-family:system-ui;font-size:13px;line-height:1.4; padding:10px 10px;}}
-  .t{{font-weight:900;margin-bottom:6px;}}
-  .m{{color:#6B7280;}}
-</style>
-<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
-</head>
-<body>
-<div id="map"></div>
-<script>
-  const center = new kakao.maps.LatLng({center[0]}, {center[1]});
-  const map = new kakao.maps.Map(document.getElementById('map'), {{
-    center: center,
-    level: {int(level)}
-  }});
-
-  const points = {json.dumps(points, ensure_ascii=False)};
-
-  if (!points.length) {{
-    const marker = new kakao.maps.Marker({{ position: center }});
-    marker.setMap(map);
-  }} else {{
-    const bounds = new kakao.maps.LatLngBounds();
-    points.forEach(p => {{
-      const pos = new kakao.maps.LatLng(p.lat, p.lng);
-      bounds.extend(pos);
-
-      const marker = new kakao.maps.Marker({{ position: pos }});
-      marker.setMap(map);
-
-      const content = `
-        <div class="iw">
-          <div class="t">${{p.title}}</div>
-          <div class="m">${{p.period}}</div>
-          <div class="m">${{p.addr}}</div>
-          ${{p.detail ? `<div class="m">상세: ${{p.detail}}</div>` : ''}}
-          <div class="m" style="margin-top:6px;font-size:12px;color:#9CA3AF;">ID: ${{p.id}}</div>
-        </div>
-      `;
-      const infowindow = new kakao.maps.InfoWindow({{ content: content }});
-      kakao.maps.event.addListener(marker, 'click', function() {{
-        infowindow.open(map, marker);
-      }});
-    }});
-    map.setBounds(bounds);
-  }}
-</script>
-</body>
-</html>
-""".strip()
-
-    b64 = base64.b64encode(html.encode("utf-8")).decode("utf-8")
+def draw_map():
+    # iframe은 FastAPI 라우트로
+    ts = int(now_kst().timestamp())
     return f"""
     <div class="mapWrap">
-      <iframe class="mapFrame" src="data:text/html;base64,{b64}" loading="lazy"></iframe>
+      <iframe class="mapFrame" src="/kakao_map?ts={ts}" loading="lazy"></iframe>
     </div>
     """
 
-def draw_map():
-    spaces = db_list_spaces()
-    items = active_spaces(spaces)
-    return make_kakao_map_iframe(items, center=(36.0190, 129.3435), level=6)
-
 
 # -------------------------
-# Modal control
+# Modal control (FAB 숨김 포함)
 # -------------------------
 def open_modal():
     st = now_kst().replace(second=0, microsecond=0)
     en = st + timedelta(minutes=30)
     return (
-        gr.update(visible=True),   # overlay
-        gr.update(visible=True),   # sheet
-        gr.update(visible=True),   # footer
-        gr.update(visible=True),   # main_view
-        gr.update(visible=False),  # addr_view
-        "",                        # msg_main
-        "",                        # msg_addr
-        st,                        # start_dt
-        en,                        # end_dt
+        gr.update(visible=True),    # overlay
+        gr.update(visible=True),    # sheet
+        gr.update(visible=True),    # footer
+        gr.update(visible=True),    # main_view
+        gr.update(visible=False),   # addr_view
+        "",                         # msg_main
+        "",                         # msg_addr
+        st,                         # start_dt
+        en,                         # end_dt
+        gr.update(visible=False),   # fab (hide)
     )
 
 def close_modal():
     return (
-        gr.update(visible=False),  # overlay
-        gr.update(visible=False),  # sheet
-        gr.update(visible=False),  # footer
-        gr.update(visible=True),   # main_view
-        gr.update(visible=False),  # addr_view
-        "",                        # msg_main
-        "",                        # msg_addr
+        gr.update(visible=False),   # overlay
+        gr.update(visible=False),   # sheet
+        gr.update(visible=False),   # footer
+        gr.update(visible=True),    # main_view
+        gr.update(visible=False),   # addr_view
+        "",                         # msg_main
+        "",                         # msg_addr
+        gr.update(visible=True),    # fab (show)
     )
 
 def goto_addr():
     return (
-        gr.update(visible=False),  # main_view
-        gr.update(visible=True),   # addr_view
-        [],                        # addr_candidates
-        gr.update(choices=[], value=None),  # dropdown reset
-        "선택: 없음",              # chosen_text
-        "",                        # msg_addr
+        gr.update(visible=False),               # main_view
+        gr.update(visible=True),                # addr_view
+        [],                                     # addr_candidates
+        gr.update(choices=[], value=None),      # dropdown reset
+        "선택: 없음",                           # chosen_text
+        "",                                     # msg_addr
     )
 
 def back_to_main():
     return (
-        gr.update(visible=True),   # main_view
-        gr.update(visible=False),  # addr_view
-        "",                        # msg_addr
+        gr.update(visible=True),    # main_view
+        gr.update(visible=False),   # addr_view
+        "",                         # msg_addr
     )
 
 
@@ -478,6 +440,24 @@ def show_chosen_place(addr_confirmed, addr_detail):
     if addr_detail:
         return f"**선택된 장소:** {addr_confirmed}\n\n상세: {addr_detail}"
     return f"**선택된 장소:** {addr_confirmed}"
+
+
+# -------------------------
+# Favorites handlers
+# -------------------------
+def load_favs():
+    favs = db_list_favorites()
+    return gr.update(choices=favs, value=None)
+
+def add_fav_from_activity(activity_text):
+    a = (activity_text or "").strip()
+    if not a:
+        return "⚠️ 즐겨찾기에 추가할 활동을 먼저 입력해 달라.", load_favs()
+    db_add_favorite(a)
+    return f"✅ '{a}' 즐겨찾기에 추가했다.", load_favs()
+
+def pick_fav_to_activity(fav_value):
+    return fav_value or ""
 
 
 # -------------------------
@@ -534,7 +514,7 @@ def create_event(activity_text, start_dt_val, end_dt_val, capacity_unlimited, ca
 
 
 # -------------------------
-# CSS (class 기반으로 확실히 먹인다)
+# CSS
 # -------------------------
 CSS = r"""
 :root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --card:#ffffffcc; --danger:#ef4444; }
@@ -574,10 +554,11 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   .btn-del{ position:static; display:block; width:100%; margin-top:10px; text-align:center; }
 }
 
+/* 지도 */
 .mapWrap{ width:100vw; max-width:100vw; margin:0; padding:0; overflow:hidden; }
 .mapFrame{ width:100vw; height: calc(100vh - 220px); border:0; border-radius:0; }
 
-/* ✅ class 기반 모달 고정 */
+/* ✅ 모달 */
 .oseyo_overlay{
   position:fixed !important;
   inset:0 !important;
@@ -595,7 +576,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   background:var(--bg) !important;
   border:1px solid var(--line) !important; border-bottom:0 !important;
   border-radius:26px 26px 0 0 !important;
-  padding:22px 16px 140px 16px !important;
+  padding:22px 16px 160px 16px !important; /* footer 공간 */
   z-index:99991 !important;
   box-shadow:0 -12px 40px rgba(0,0,0,0.25) !important;
 }
@@ -615,10 +596,15 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   min-width:0 !important;
 }
 
+/* ✅ FAB: 레이아웃 자리(바) 생기는 문제를 wrap height:0로 제거 */
+.oseyo_fab_wrap{
+  height:0 !important;
+  overflow:visible !important;
+}
 .oseyo_fab{
   position:fixed !important;
   right:22px !important; bottom:22px !important;
-  z-index:999999 !important;
+  z-index:99980 !important; /* footer보다 낮게(그리고 모달 열리면 숨김) */
 }
 .oseyo_fab button{
   width:64px !important; height:64px !important;
@@ -638,6 +624,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 # UI
 # -------------------------
 with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
+    # address states
     addr_confirmed = gr.State("")
     addr_detail = gr.State("")
     addr_lat = gr.State(None)
@@ -654,20 +641,27 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
             map_html = gr.HTML()
             map_refresh = gr.Button("지도 새로고침")
 
-    # ✅ FAB: class로 고정
-    fab = gr.Button("+", elem_classes=["oseyo_fab"])
+    # ✅ FAB: wrap으로 자리 차지 제거
+    with gr.Row(elem_classes=["oseyo_fab_wrap"]):
+        fab = gr.Button("+", elem_classes=["oseyo_fab"])
 
-    # ✅ overlay/sheet/footer: class로 고정
     overlay = gr.HTML("<div></div>", visible=False, elem_classes=["oseyo_overlay"])
     sheet = gr.Column(visible=False, elem_classes=["oseyo_sheet"])
     footer = gr.Row(visible=False, elem_classes=["oseyo_footer"])
 
-    # ✅✅ 핵심 수정: main_view/addr_view는 반드시 sheet 안에서 생성해야 한다
     with sheet:
         with gr.Column(visible=True) as main_view:
             gr.Markdown("### 열어놓기")
             photo_np = gr.Image(label="사진(선택)", type="numpy")
-            activity_text = gr.Textbox(label="활동", placeholder="예: 산책, 커피, 스터디…", lines=1)
+
+            # 활동 + 즐겨찾기 버튼
+            with gr.Row():
+                activity_text = gr.Textbox(label="활동", placeholder="예: 산책, 커피, 스터디…", lines=1, scale=8)
+                btn_add_fav = gr.Button("＋ 즐겨찾기", scale=2)
+
+            fav_dropdown = gr.Dropdown(label="즐겨찾기 활동(선택하면 활동 입력에 채워짐)", choices=[], value=None)
+            fav_msg = gr.Markdown("")
+
             start_dt = gr.DateTime(label="시작 일시", include_time=True)
             end_dt = gr.DateTime(label="종료 일시", include_time=True)
 
@@ -693,43 +687,44 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         btn_done = gr.Button("완료")
         btn_addr_confirm = gr.Button("주소 선택 완료")
 
-    # 초기 로드
+    # Load
     demo.load(fn=render_home, inputs=None, outputs=home_html)
     demo.load(fn=draw_map, inputs=None, outputs=map_html)
+    demo.load(fn=load_favs, inputs=None, outputs=fav_dropdown)
+
     refresh_btn.click(fn=render_home, inputs=None, outputs=home_html)
     map_refresh.click(fn=draw_map, inputs=None, outputs=map_html)
 
-    # 모달 열기/닫기
+    # FAB open -> hide FAB
     fab.click(
         fn=open_modal,
         inputs=None,
-        outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr, start_dt, end_dt]
+        outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr, start_dt, end_dt, fab],
     )
 
     btn_close.click(
         fn=close_modal,
         inputs=None,
-        outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr]
+        outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr, fab],
     )
 
-    # 장소 검색 화면 이동
+    # Address flow
     btn_open_addr.click(
         fn=goto_addr,
         inputs=None,
-        outputs=[main_view, addr_view, addr_candidates, addr_pick, chosen_text, msg_addr]
+        outputs=[main_view, addr_view, addr_candidates, addr_pick, chosen_text, msg_addr],
     )
 
     btn_back.click(
         fn=back_to_main,
         inputs=None,
-        outputs=[main_view, addr_view, msg_addr]
+        outputs=[main_view, addr_view, msg_addr],
     )
 
-    # 주소 검색 / 선택 / 확정
     btn_addr_search.click(
         fn=addr_search,
         inputs=[addr_query],
-        outputs=[addr_candidates, addr_pick, chosen_text, msg_addr]
+        outputs=[addr_candidates, addr_pick, chosen_text, msg_addr],
     )
 
     addr_pick.change(fn=on_pick, inputs=[addr_pick], outputs=[chosen_text])
@@ -743,29 +738,51 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     addr_confirmed.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
     addr_detail.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
 
-    # 이벤트 생성 + 성공 시 모달 닫기
+    # Favorites
+    btn_add_fav.click(
+        fn=add_fav_from_activity,
+        inputs=[activity_text],
+        outputs=[fav_msg, fav_dropdown],
+    )
+    fav_dropdown.change(
+        fn=pick_fav_to_activity,
+        inputs=[fav_dropdown],
+        outputs=[activity_text],
+    )
+
+    # Create + close if success
     def create_then_close(*args):
         msg, home, mapv = create_event(*args)
         if isinstance(msg, str) and msg.startswith("✅"):
+            # 성공: 모달 닫기 + FAB 다시 보이기 + 즐겨찾기 목록 갱신
             return (
                 msg, home, mapv,
                 gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
                 gr.update(visible=True), gr.update(visible=False),
-                ""
+                "",
+                gr.update(visible=True),
+                load_favs(),
             )
+        # 실패: 모달 유지
         return (
             msg, home, mapv,
             gr.update(visible=True), gr.update(visible=True), gr.update(visible=True),
             gr.update(visible=True), gr.update(visible=False),
-            ""
+            "",
+            gr.update(visible=False),
+            load_favs(),
         )
 
     btn_done.click(
         fn=create_then_close,
         inputs=[activity_text, start_dt, end_dt, capacity_unlimited, cap_max, photo_np,
                 addr_confirmed, addr_detail, addr_lat, addr_lng],
-        outputs=[msg_main, home_html, map_html, overlay, sheet, footer, main_view, addr_view, msg_addr],
+        outputs=[msg_main, home_html, map_html,
+                 overlay, sheet, footer, main_view, addr_view, msg_addr,
+                 fab,
+                 fav_dropdown],
     )
+
 
 # -------------------------
 # FastAPI
@@ -783,5 +800,82 @@ def delete(space_id: str):
     except:
         pass
     return RedirectResponse(url="/app", status_code=302)
+
+@app.get("/kakao_map")
+def kakao_map(request: Request):
+    # 지도 페이지를 직접 서빙 (data: iframe 차단 대비)
+    if not KAKAO_JAVASCRIPT_KEY:
+        return HTMLResponse("""
+        <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/></head>
+        <body style="margin:0;font-family:system-ui;">
+          <div style="padding:18px;">
+            <h3 style="margin:0 0 8px;color:#b91c1c;">KAKAO_JAVASCRIPT_KEY가 없다</h3>
+            <div>Render 환경변수에 KAKAO_JAVASCRIPT_KEY를 넣어야 카카오 지도가 뜬다.</div>
+          </div>
+        </body></html>
+        """)
+
+    points = map_points_payload()
+    center_lat, center_lng = (36.0190, 129.3435)
+
+    html = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<style>
+  html,body{{margin:0;height:100%;}}
+  #map{{width:100%;height:100%;}}
+  .iw{{font-family:system-ui;font-size:13px;line-height:1.4; padding:10px 10px;}}
+  .t{{font-weight:900;margin-bottom:6px;}}
+  .m{{color:#6B7280;}}
+</style>
+<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
+</head>
+<body>
+<div id="map"></div>
+<script>
+  const center = new kakao.maps.LatLng({center_lat}, {center_lng});
+  const map = new kakao.maps.Map(document.getElementById('map'), {{
+    center: center,
+    level: 6
+  }});
+
+  const points = {json.dumps(points, ensure_ascii=False)};
+
+  if (!points.length) {{
+    const marker = new kakao.maps.Marker({{ position: center }});
+    marker.setMap(map);
+  }} else {{
+    const bounds = new kakao.maps.LatLngBounds();
+    points.forEach(p => {{
+      const pos = new kakao.maps.LatLng(p.lat, p.lng);
+      bounds.extend(pos);
+
+      const marker = new kakao.maps.Marker({{ position: pos }});
+      marker.setMap(map);
+
+      const content = `
+        <div class="iw">
+          <div class="t">${{p.title}}</div>
+          <div class="m">${{p.period}}</div>
+          <div class="m">${{p.addr}}</div>
+          ${{p.detail ? `<div class="m">상세: ${{p.detail}}</div>` : ''}}
+          <div class="m" style="margin-top:6px;font-size:12px;color:#9CA3AF;">ID: ${{p.id}}</div>
+        </div>
+      `;
+      const infowindow = new kakao.maps.InfoWindow({{ content: content }});
+      kakao.maps.event.addListener(marker, 'click', function() {{
+        infowindow.open(map, marker);
+      }});
+    }});
+    map.setBounds(bounds);
+  }}
+</script>
+</body>
+</html>
+"""
+    return HTMLResponse(html)
 
 app = gr.mount_gradio_app(app, demo, path="/app")
