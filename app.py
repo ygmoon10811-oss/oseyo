@@ -1,12 +1,12 @@
 # =========================================================
-# OSEYO — HARD FIX (Gradio 4.44+ / Render)
-# Fix:
-# - DateTime picker 안 뜸: flatpickr position:fixed + z-index + transform 방지
-# - 선택했는데도 "일시 선택" 뜸/등록 안됨: normalize_dt() Z/ms/dict/list/timestamp 전부 처리
-# - 모달 가로 스크롤 제거: box-sizing/max-width/overflow-x 강제 + row wrap 정리
-# - + 버튼이 완료 가림: 모달 열리면 FAB 숨김
-# - 지도: data: iframe 차단 대비 -> FastAPI가 /kakao_map HTML 직접 서빙
-# - 즐겨찾기 활동: 추가/선택 가능, DB 저장
+# OSEYO — REGISTER FIXED (Gradio 4.44+)
+# 핵심 수정:
+# 1) gr.State 제거 -> 중요한 값(주소/좌표/일시)은 "숨김 컴포넌트"로 저장해서 클릭시 100% 서버로 전달
+# 2) DateTime picker가 모달에서 안 보이는 문제 -> flatpickr position:fixed + z-index 최상위
+# 3) 모달 가로 스크롤 완전 제거 -> sheet 내부 전부 overflow-x:hidden + max-width 강제
+# 4) 등록 실패 원인 바로 보이게 -> msg에 디버그(현재 입력값) 출력
+# 5) 지도는 FastAPI /kakao_map으로 서빙(데이터 iframe 차단 방지)
+# 6) 즐겨찾기 활동 추가/선택 복구(DB 저장)
 # =========================================================
 
 import os, uuid, base64, io, sqlite3, json, traceback
@@ -31,33 +31,15 @@ def now_kst():
     return datetime.now(KST)
 
 def _clean_iso(s: str) -> str:
-    """
-    다양한 ISO/날짜 문자열을 fromisoformat에 맞게 정리
-    - 공백 -> T
-    - ...Z -> ...+00:00
-    - 밀리초 포함 + Z 처리
-    """
     s = (s or "").strip()
     if not s:
         return ""
     s = s.replace(" ", "T")
-    # Z(UTC) 처리
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     return s
 
 def normalize_dt(v):
-    """
-    gr.DateTime 값이 환경/브라우저/버전에 따라 형태가 다름.
-    - datetime
-    - "2026-01-05 15:40:00"
-    - "2026-01-05T15:40:00"
-    - "2026-01-05T06:40:00.000Z" 같은 Z 포함
-    - {"value": "..."} dict
-    - [..] list/tuple
-    - epoch timestamp (ms/s)
-    전부 datetime(KST)로 변환.
-    """
     if v is None:
         return None
 
@@ -76,7 +58,7 @@ def normalize_dt(v):
 
     if isinstance(v, (int, float)):
         try:
-            if v > 1e12:  # ms
+            if v > 1e12:
                 v = v / 1000.0
             return datetime.fromtimestamp(v, tz=KST)
         except:
@@ -86,27 +68,20 @@ def normalize_dt(v):
         s = _clean_iso(v)
         if not s:
             return None
-        # 밀리초가 너무 길게 붙어 fromisoformat 실패하는 경우 대비
-        # 예: 2026-01-05T06:40:00.000000+00:00 -> OK
-        # 예외 나면 밀리초 부분을 잘라 재시도
         try:
             dt = datetime.fromisoformat(s)
         except:
             try:
-                # . 이후 밀리초 부분을 6자리까지만
                 if "." in s:
                     head, tail = s.split(".", 1)
-                    # tail에 timezone이 섞여 있을 수 있음
                     tz = ""
                     frac = tail
                     if "+" in tail:
                         frac, tz = tail.split("+", 1)
                         tz = "+" + tz
                     elif "-" in tail[1:]:
-                        # timezone negative (주의: 날짜 '-'랑 구분 위해 tail[1:])
-                        parts = tail.split("-", 1)
-                        frac = parts[0]
-                        tz = "-" + parts[1]
+                        frac, tz = tail.split("-", 1)
+                        tz = "-" + tz
                     frac = "".join([c for c in frac if c.isdigit()])[:6]
                     s2 = head + "." + (frac if frac else "0") + tz
                     dt = datetime.fromisoformat(s2)
@@ -114,7 +89,6 @@ def normalize_dt(v):
                     return None
             except:
                 return None
-
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=KST)
         return dt.astimezone(KST)
@@ -147,6 +121,7 @@ def image_np_to_b64(img_np):
 
 def b64_to_data_uri(b64_str):
     return f"data:image/jpeg;base64,{b64_str}" if b64_str else ""
+
 
 # -------------------------
 # DB
@@ -282,6 +257,7 @@ def db_add_favorite(activity: str):
         con.execute("INSERT OR IGNORE INTO favorites(activity, created_at) VALUES (?,?)", (a, now_kst().isoformat()))
         con.commit()
 
+
 # -------------------------
 # Kakao keyword search (REST)
 # -------------------------
@@ -325,6 +301,7 @@ def kakao_keyword_search(q: str, size=15):
     if not cands:
         return [], "⚠️ 검색 결과가 없다."
     return cands, ""
+
 
 # -------------------------
 # Home
@@ -377,8 +354,9 @@ def render_home():
 
     return "\n".join(out)
 
+
 # -------------------------
-# Map: served by FastAPI
+# Map (FastAPI)
 # -------------------------
 def map_points_payload():
     spaces = db_list_spaces()
@@ -404,23 +382,24 @@ def draw_map():
     </div>
     """
 
+
 # -------------------------
-# Modal control
+# Modal open/close
 # -------------------------
 def open_modal():
     st = now_kst().replace(second=0, microsecond=0)
     en = st + timedelta(minutes=30)
     return (
-        gr.update(visible=True),    # overlay
-        gr.update(visible=True),    # sheet
-        gr.update(visible=True),    # footer
-        gr.update(visible=True),    # main_view
-        gr.update(visible=False),   # addr_view
-        "",                         # msg_main
-        "",                         # msg_addr
-        st,                         # start_dt
-        en,                         # end_dt
-        gr.update(visible=False),   # fab hide
+        gr.update(visible=True),   # overlay
+        gr.update(visible=True),   # sheet
+        gr.update(visible=True),   # footer
+        gr.update(visible=True),   # main_view
+        gr.update(visible=False),  # addr_view
+        "",                        # msg_main
+        "",                        # msg_addr
+        st,                        # start_dt
+        en,                        # end_dt
+        gr.update(visible=False),  # fab hide
     )
 
 def close_modal():
@@ -452,6 +431,7 @@ def back_to_main():
         "",
     )
 
+
 # -------------------------
 # Address flow
 # -------------------------
@@ -478,6 +458,7 @@ def confirm_addr(cands, picked_label, detail_text):
         if c.get("label") == picked_label:
             chosen = c
             break
+
     if not chosen:
         return ("⚠️ 선택값이 꼬였다. 다시 검색해 달라.", "", "", None, None, gr.update(visible=False), gr.update(visible=True))
 
@@ -486,11 +467,14 @@ def confirm_addr(cands, picked_label, detail_text):
     return ("✅ 주소가 입력되었다.", confirmed, det, chosen["lat"], chosen["lng"], gr.update(visible=True), gr.update(visible=False))
 
 def show_chosen_place(addr_confirmed, addr_detail):
+    addr_confirmed = (addr_confirmed or "").strip()
+    addr_detail = (addr_detail or "").strip()
     if not addr_confirmed:
         return "**선택된 장소:** *(아직 없음)*"
     if addr_detail:
         return f"**선택된 장소:** {addr_confirmed}\n\n상세: {addr_detail}"
     return f"**선택된 장소:** {addr_confirmed}"
+
 
 # -------------------------
 # Favorites
@@ -508,30 +492,41 @@ def add_fav_from_activity(activity_text):
 def pick_fav_to_activity(fav_value):
     return fav_value or ""
 
+
 # -------------------------
 # Create event
 # -------------------------
 def create_event(activity_text, start_dt_val, end_dt_val, capacity_unlimited, cap_max, photo_np,
-                 addr_confirmed, addr_detail, addr_lat, addr_lng):
-    act = (activity_text or "").strip()
-    if not act:
-        return "⚠️ 활동을 입력해 달라.", render_home(), draw_map()
+                 addr_confirmed_h, addr_detail_h, addr_lat_h, addr_lng_h):
 
-    if (not addr_confirmed) or (addr_lat is None) or (addr_lng is None):
-        return "⚠️ 장소를 선택해 달라. (장소 검색하기)", render_home(), draw_map()
+    act = (activity_text or "").strip()
+
+    # 디버그: 지금 서버에 들어온 값들을 그대로 찍어준다(짧게)
+    dbg = f"DBG addr='{str(addr_confirmed_h)[:40]}' lat={addr_lat_h} lng={addr_lng_h} start={str(start_dt_val)[:40]} end={str(end_dt_val)[:40]}"
+
+    if not act:
+        return f"⚠️ 활동을 입력해 달라.\n{dbg}", render_home(), draw_map()
+
+    addr_confirmed_h = (addr_confirmed_h or "").strip()
+    addr_detail_h = (addr_detail_h or "").strip()
+
+    try:
+        lat = float(addr_lat_h) if addr_lat_h not in (None, "") else None
+        lng = float(addr_lng_h) if addr_lng_h not in (None, "") else None
+    except:
+        lat = None; lng = None
+
+    if (not addr_confirmed_h) or (lat is None) or (lng is None):
+        return f"⚠️ 장소를 선택해 달라. (장소 검색하기)\n{dbg}", render_home(), draw_map()
 
     st = normalize_dt(start_dt_val)
     en = normalize_dt(end_dt_val)
-
     if st is None or en is None:
-        # 원인 파악용(너한테 보이게) - 너무 길게는 안 띄움
-        raw_s = str(start_dt_val)[:80]
-        raw_e = str(end_dt_val)[:80]
-        return f"⚠️ 시작/종료 일시를 선택해 달라.\n(디버그: start={raw_s} / end={raw_e})", render_home(), draw_map()
+        return f"⚠️ 시작/종료 일시를 선택해 달라.\n{dbg}", render_home(), draw_map()
 
     st = st.astimezone(KST); en = en.astimezone(KST)
     if en <= st:
-        return "⚠️ 종료 일시는 시작 일시보다 뒤여야 한다.", render_home(), draw_map()
+        return f"⚠️ 종료 일시는 시작 일시보다 뒤여야 한다.\n{dbg}", render_home(), draw_map()
 
     new_id = uuid.uuid4().hex[:8]
     photo_b64 = image_np_to_b64(photo_np)
@@ -554,27 +549,27 @@ def create_event(activity_text, start_dt_val, end_dt_val, capacity_unlimited, ca
             "photo_b64": photo_b64,
             "start_iso": st.isoformat(),
             "end_iso": en.isoformat(),
-            "address_confirmed": addr_confirmed,
-            "address_detail": (addr_detail or "").strip(),
-            "lat": float(addr_lat),
-            "lng": float(addr_lng),
+            "address_confirmed": addr_confirmed_h,
+            "address_detail": addr_detail_h,
+            "lat": float(lat),
+            "lng": float(lng),
             "capacityEnabled": capacityEnabled,
             "capacityMax": cap_max_val,
             "hidden": False,
         })
     except Exception:
         err = traceback.format_exc().splitlines()[-1]
-        return f"⚠️ DB 저장 실패: {err}", render_home(), draw_map()
+        return f"⚠️ DB 저장 실패: {err}\n{dbg}", render_home(), draw_map()
 
     return f"✅ 등록 완료: '{title}'", render_home(), draw_map()
 
+
 # -------------------------
-# CSS (가로스크롤 제거 + DateTime picker 강제 표시)
+# CSS (picker + 가로스크롤 완전 차단)
 # -------------------------
 CSS = r"""
 :root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --card:#ffffffcc; --danger:#ef4444; }
-
-* { box-sizing: border-box !important; }
+* { box-sizing:border-box !important; }
 
 html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !important; }
 .gradio-container { background:var(--bg) !important; width:100% !important; overflow-x:hidden !important; }
@@ -585,9 +580,6 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 
 .card{ position:relative; background:var(--card); border:1px solid var(--line); border-radius:18px; padding:14px; margin:12px auto; max-width:1200px; }
 .card.empty{ max-width:700px; }
-.h{ font-size:16px; font-weight:900; color:var(--ink); margin-bottom:6px; }
-.p{ font-size:13px; color:var(--muted); line-height:1.6; }
-
 .rowcard{ display:grid; grid-template-columns:1fr minmax(320px,560px); gap:18px; align-items:start; padding-right:86px; }
 .title{ font-size:16px; font-weight:900; color:var(--ink); margin-bottom:6px; }
 .period{ font-size:14px; font-weight:900; color:#111827; margin:2px 0 8px; }
@@ -615,17 +607,15 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 .mapWrap{ width:100vw; max-width:100vw; margin:0; padding:0; overflow:hidden; }
 .mapFrame{ width:100vw; height: calc(100vh - 220px); border:0; border-radius:0; }
 
-/* ✅ DateTime picker(flatpickr) 강제 표시 (모달/오버레이 위로) */
+/* ✅ DateTime picker(flatpickr) 모달 위로 + 모달에서 잘림 방지 */
 .flatpickr-calendar,
 .flatpickr-time,
 .flatpickr-dropdown {
   z-index: 1000005 !important;
 }
-.flatpickr-calendar {
-  position: fixed !important; /* ✅ 이게 핵심 */
-}
+.flatpickr-calendar { position: fixed !important; } /* 핵심 */
 
-/* 모달 */
+/* 모달 overlay */
 .oseyo_overlay{
   position:fixed !important;
   inset:0 !important;
@@ -633,7 +623,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   z-index:99990 !important;
 }
 
-/* ✅ 모달 가로스크롤 절대 금지 */
+/* ✅ 모달 가로스크롤 완전 차단 */
 .oseyo_sheet{
   position:fixed !important;
   left:50% !important; transform:translateX(-50%) !important;
@@ -641,7 +631,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   width:min(420px,96vw) !important;
   height:88vh !important;
   overflow-y:auto !important;
-  overflow-x:hidden !important;  /* ✅ */
+  overflow-x:hidden !important;
   background:var(--bg) !important;
   border:1px solid var(--line) !important; border-bottom:0 !important;
   border-radius:26px 26px 0 0 !important;
@@ -649,10 +639,8 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   z-index:99991 !important;
   box-shadow:0 -12px 40px rgba(0,0,0,0.25) !important;
 }
-
-.oseyo_sheet *{
-  max-width:100% !important;     /* ✅ */
-}
+.oseyo_sheet *{ max-width:100% !important; }
+.oseyo_sheet .gr-row{ flex-wrap:wrap !important; } /* row 삐져나오는 것 방지 */
 
 .oseyo_footer{
   position:fixed !important;
@@ -665,26 +653,13 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   z-index:99992 !important;
 }
 
-/* 입력들 */
 .oseyo_sheet input, .oseyo_sheet textarea, .oseyo_sheet select{
   width:100% !important;
   min-width:0 !important;
 }
 
-/* slider 같은 애들이 삐져나오는 것 방지 */
-.oseyo_sheet .wrap,
-.oseyo_sheet .gr-row,
-.oseyo_sheet .gr-form,
-.oseyo_sheet .gr-box{
-  max-width:100% !important;
-  overflow-x:hidden !important;
-}
-
-/* FAB: 레이아웃 자리(바) 제거 */
-.oseyo_fab_wrap{
-  height:0 !important;
-  overflow:visible !important;
-}
+/* FAB 자리(빈 바) 제거 */
+.oseyo_fab_wrap{ height:0 !important; overflow:visible !important; }
 .oseyo_fab{
   position:fixed !important;
   right:22px !important; bottom:22px !important;
@@ -704,14 +679,17 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 }
 """
 
+
 # -------------------------
 # UI
 # -------------------------
 with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
-    addr_confirmed = gr.State("")
-    addr_detail = gr.State("")
-    addr_lat = gr.State(None)
-    addr_lng = gr.State(None)
+    # ✅ State 대신 "숨김 컴포넌트"로 저장 (등록 클릭시 100% 서버로 넘어감)
+    addr_confirmed_h = gr.Textbox(visible=False, value="")
+    addr_detail_h = gr.Textbox(visible=False, value="")
+    addr_lat_h = gr.Number(visible=False, value=None)
+    addr_lng_h = gr.Number(visible=False, value=None)
+
     addr_candidates = gr.State([])
 
     gr.Markdown("## 지금, 열려 있습니다\n원하시면 오세요")
@@ -772,7 +750,6 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         btn_done = gr.Button("완료")
         btn_addr_confirm = gr.Button("주소 선택 완료")
 
-    # load
     demo.load(fn=render_home, inputs=None, outputs=home_html)
     demo.load(fn=draw_map, inputs=None, outputs=map_html)
     demo.load(fn=load_favs, inputs=None, outputs=fav_dropdown)
@@ -786,7 +763,6 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         inputs=None,
         outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr, start_dt, end_dt, fab],
     )
-
     btn_close.click(
         fn=close_modal,
         inputs=None,
@@ -799,41 +775,32 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         inputs=None,
         outputs=[main_view, addr_view, addr_candidates, addr_pick, chosen_text, msg_addr],
     )
-
     btn_back.click(
         fn=back_to_main,
         inputs=None,
         outputs=[main_view, addr_view, msg_addr],
     )
-
     btn_addr_search.click(
         fn=addr_search,
         inputs=[addr_query],
         outputs=[addr_candidates, addr_pick, chosen_text, msg_addr],
     )
-
     addr_pick.change(fn=on_pick, inputs=[addr_pick], outputs=[chosen_text])
 
+    # ✅ 주소 확정 시: 숨김 컴포넌트에 값 저장
     btn_addr_confirm.click(
         fn=confirm_addr,
         inputs=[addr_candidates, addr_pick, addr_detail_in],
-        outputs=[msg_addr, addr_confirmed, addr_detail, addr_lat, addr_lng, main_view, addr_view],
+        outputs=[msg_addr, addr_confirmed_h, addr_detail_h, addr_lat_h, addr_lng_h, main_view, addr_view],
     )
 
-    addr_confirmed.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
-    addr_detail.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
+    # 선택된 장소 표시
+    addr_confirmed_h.change(fn=show_chosen_place, inputs=[addr_confirmed_h, addr_detail_h], outputs=[chosen_place_view])
+    addr_detail_h.change(fn=show_chosen_place, inputs=[addr_confirmed_h, addr_detail_h], outputs=[chosen_place_view])
 
     # favorites
-    btn_add_fav.click(
-        fn=add_fav_from_activity,
-        inputs=[activity_text],
-        outputs=[fav_msg, fav_dropdown],
-    )
-    fav_dropdown.change(
-        fn=pick_fav_to_activity,
-        inputs=[fav_dropdown],
-        outputs=[activity_text],
-    )
+    btn_add_fav.click(fn=add_fav_from_activity, inputs=[activity_text], outputs=[fav_msg, fav_dropdown])
+    fav_dropdown.change(fn=pick_fav_to_activity, inputs=[fav_dropdown], outputs=[activity_text])
 
     # create then close on success
     def create_then_close(*args):
@@ -859,12 +826,13 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     btn_done.click(
         fn=create_then_close,
         inputs=[activity_text, start_dt, end_dt, capacity_unlimited, cap_max, photo_np,
-                addr_confirmed, addr_detail, addr_lat, addr_lng],
+                addr_confirmed_h, addr_detail_h, addr_lat_h, addr_lng_h],
         outputs=[msg_main, home_html, map_html,
                  overlay, sheet, footer, main_view, addr_view, msg_addr,
                  fab,
                  fav_dropdown],
     )
+
 
 # -------------------------
 # FastAPI
