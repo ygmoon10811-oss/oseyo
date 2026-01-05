@@ -1,8 +1,9 @@
 # =========================================================
-# OSEYO — FINAL DEBUG + FAILSAFE REGISTER
-# - Gradio DateTime이 None으로 들어오는 문제를 "문자열 백업 입력"으로 무조건 우회
-# - Render 로그/화면에 입력 타입/값/파싱결과/DB에러를 강제 출력
-# - 주소/좌표는 hidden 컴포넌트로 100% 전달
+# OSEYO — ADDRESS FIX (즉시 저장 방식)
+# - 장소 드롭다운 선택 순간 addr/lat/lng를 hidden에 즉시 저장 (버튼 확정 필요 없음)
+# - 상세 입력도 입력 순간 hidden 저장
+# - "주소 선택 완료"는 단순히 메인으로 돌아가기만 함
+# - DateTime 위젯 문제 대비: 백업 텍스트 입력 유지
 # =========================================================
 
 import os, uuid, base64, io, sqlite3, json, traceback
@@ -24,7 +25,6 @@ def now_kst():
     return datetime.now(KST)
 
 def log(*args):
-    # Render logs에 찍힘
     try:
         print("[OSEYO]", *args, flush=True)
     except:
@@ -42,20 +42,16 @@ def _clean_iso(s: str) -> str:
 def normalize_dt(v):
     if v is None:
         return None
-
     if isinstance(v, dict):
         v = v.get("value") or v.get("data") or v.get("datetime") or v.get("date") or v.get("time") or None
         if v is None:
             return None
-
     if isinstance(v, (list, tuple)):
         if len(v) == 0:
             return None
         v = v[0]
-
     if isinstance(v, datetime):
         return v if v.tzinfo else v.replace(tzinfo=KST)
-
     if isinstance(v, (int, float)):
         try:
             if v > 1e12:
@@ -63,7 +59,6 @@ def normalize_dt(v):
             return datetime.fromtimestamp(v, tz=KST)
         except:
             return None
-
     if isinstance(v, str):
         s = _clean_iso(v)
         if not s:
@@ -71,7 +66,6 @@ def normalize_dt(v):
         try:
             dt = datetime.fromisoformat(s)
         except:
-            # 밀리초/타임존 꼬임 보정
             try:
                 if "." in s:
                     head, tail = s.split(".", 1)
@@ -93,15 +87,9 @@ def normalize_dt(v):
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=KST)
         return dt.astimezone(KST)
-
     return None
 
 def parse_dt_failsafe(dt_widget_value, dt_text_value):
-    """
-    1) DateTime 위젯 값으로 파싱 시도
-    2) 실패하면 텍스트 백업 입력(dt_text_value)로 파싱
-       - 허용 형식: YYYY-MM-DD HH:MM 또는 YYYY-MM-DDTHH:MM
-    """
     dt = normalize_dt(dt_widget_value)
     if dt is not None:
         return dt, "widget"
@@ -109,17 +97,13 @@ def parse_dt_failsafe(dt_widget_value, dt_text_value):
     s = (dt_text_value or "").strip()
     if not s:
         return None, "none"
-
     s = s.replace("T", " ")
-    # 초는 없어도 됨
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
         try:
             naive = datetime.strptime(s, fmt)
             return naive.replace(tzinfo=KST), "text"
         except:
             pass
-
-    # 마지막으로 fromisoformat 시도
     try:
         dt2 = datetime.fromisoformat(_clean_iso(s))
         if dt2.tzinfo is None:
@@ -413,7 +397,6 @@ def draw_map():
 def open_modal():
     st = now_kst().replace(second=0, microsecond=0)
     en = st + timedelta(minutes=30)
-    # 텍스트 백업 입력 기본값도 같이
     return (
         gr.update(visible=True),
         gr.update(visible=True),
@@ -422,8 +405,7 @@ def open_modal():
         gr.update(visible=False),
         "",
         "",
-        st,
-        en,
+        st, en,
         f"{st:%Y-%m-%d %H:%M}",
         f"{en:%Y-%m-%d %H:%M}",
         gr.update(visible=False),
@@ -452,14 +434,10 @@ def goto_addr():
     )
 
 def back_to_main():
-    return (
-        gr.update(visible=True),
-        gr.update(visible=False),
-        "",
-    )
+    return (gr.update(visible=True), gr.update(visible=False), "")
 
 # -------------------------
-# Address flow
+# Address flow (핵심 수정)
 # -------------------------
 def addr_search(query):
     cands, err = kakao_keyword_search(query, size=15)
@@ -471,25 +449,27 @@ def addr_search(query):
     chosen = f"선택: {default}" if default else "선택: 없음"
     return (cands, gr.update(choices=labels, value=default), chosen, "")
 
-def on_pick(label):
-    return f"선택: {label}" if label else "선택: 없음"
-
-def confirm_addr(cands, picked_label, detail_text):
+def stage_addr_on_pick(cands, picked_label):
+    """
+    ✅ 드롭다운 선택 순간 hidden에 addr/lat/lng 즉시 저장
+    """
     picked_label = (picked_label or "").strip()
     if not picked_label:
-        return ("⚠️ 주소를 선택해 달라.", "", "", None, None, gr.update(visible=False), gr.update(visible=True))
+        return ("선택: 없음", "", None, None)
 
     chosen = None
     for c in (cands or []):
         if c.get("label") == picked_label:
             chosen = c
             break
-    if not chosen:
-        return ("⚠️ 선택값이 꼬였다. 다시 검색해 달라.", "", "", None, None, gr.update(visible=False), gr.update(visible=True))
 
-    confirmed = chosen["label"]
-    det = (detail_text or "").strip()
-    return ("✅ 주소가 입력되었다.", confirmed, det, chosen["lat"], chosen["lng"], gr.update(visible=True), gr.update(visible=False))
+    if not chosen:
+        return (f"선택: {picked_label}", "", None, None)
+
+    return (f"선택: {picked_label}", chosen["label"], chosen["lat"], chosen["lng"])
+
+def stage_detail_on_change(detail_text):
+    return (detail_text or "").strip()
 
 def show_chosen_place(addr_confirmed, addr_detail):
     a = (addr_confirmed or "").strip()
@@ -500,24 +480,25 @@ def show_chosen_place(addr_confirmed, addr_detail):
         return f"**선택된 장소:** {a}\n\n상세: {d}"
     return f"**선택된 장소:** {a}"
 
+def addr_done_go_back():
+    # 이제 주소 선택 완료는 "뒤로" 역할만
+    return (gr.update(visible=True), gr.update(visible=False), "")
+
 # -------------------------
 # Favorites
 # -------------------------
-def load_favs():
-    return gr.update(choices=db_list_favorites(), value=None)
-
 def add_fav_from_activity(activity_text):
     a = (activity_text or "").strip()
     if not a:
-        return "⚠️ 즐겨찾기에 추가할 활동을 먼저 입력해 달라.", load_favs()
+        return "⚠️ 즐겨찾기에 추가할 활동을 먼저 입력해 달라.", gr.update(choices=db_list_favorites(), value=None)
     db_add_favorite(a)
-    return f"✅ '{a}' 즐겨찾기에 추가했다.", load_favs()
+    return f"✅ '{a}' 즐겨찾기에 추가했다.", gr.update(choices=db_list_favorites(), value=None)
 
 def pick_fav_to_activity(fav_value):
     return fav_value or ""
 
 # -------------------------
-# Create event (DEBUG + FAILSAFE)
+# Create event
 # -------------------------
 def create_event(activity_text,
                  start_dt_widget, end_dt_widget,
@@ -525,43 +506,24 @@ def create_event(activity_text,
                  capacity_unlimited, cap_max, photo_np,
                  addr_confirmed_h, addr_detail_h, addr_lat_h, addr_lng_h):
 
-    log("CLICK create_event")
-    log("types:",
-        type(activity_text), type(start_dt_widget), type(end_dt_widget),
-        type(start_dt_text), type(end_dt_text),
-        type(addr_confirmed_h), type(addr_lat_h), type(addr_lng_h)
-    )
-    log("values:",
-        {"activity": activity_text,
-         "start_widget": str(start_dt_widget)[:120],
-         "end_widget": str(end_dt_widget)[:120],
-         "start_text": start_dt_text,
-         "end_text": end_dt_text,
-         "addr": addr_confirmed_h,
-         "lat": addr_lat_h,
-         "lng": addr_lng_h
-        }
-    )
-
     act = (activity_text or "").strip()
-    if not act:
-        return "⚠️ 활동을 입력해 달라.", render_home(), draw_map()
-
     addr = (addr_confirmed_h or "").strip()
     det = (addr_detail_h or "").strip()
+
     try:
         lat = float(addr_lat_h) if addr_lat_h not in (None, "") else None
         lng = float(addr_lng_h) if addr_lng_h not in (None, "") else None
     except:
         lat = None; lng = None
 
+    if not act:
+        return "⚠️ 활동을 입력해 달라.", render_home(), draw_map()
+
     if (not addr) or (lat is None) or (lng is None):
-        return f"⚠️ 장소를 선택해 달라.\n(지금 서버값: addr='{addr}' lat={lat} lng={lng})", render_home(), draw_map()
+        return f"⚠️ 장소를 선택해 달라. (지금 서버값: addr='{addr}' lat={lat} lng={lng})", render_home(), draw_map()
 
     st, src_s = parse_dt_failsafe(start_dt_widget, start_dt_text)
     en, src_e = parse_dt_failsafe(end_dt_widget, end_dt_text)
-
-    log("parsed:", {"start": str(st), "end": str(en), "src_s": src_s, "src_e": src_e})
 
     if st is None or en is None:
         return ("⚠️ 시작/종료 일시를 선택해 달라.\n"
@@ -606,7 +568,7 @@ def create_event(activity_text,
         err_last = err_full.splitlines()[-1]
         return f"⚠️ DB 저장 실패: {err_last}", render_home(), draw_map()
 
-    return f"✅ 등록 완료: '{title}' (시간출처: {src_s}/{src_e})", render_home(), draw_map()
+    return f"✅ 등록 완료: '{title}'", render_home(), draw_map()
 
 # -------------------------
 # CSS
@@ -713,7 +675,6 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
             fav_dropdown = gr.Dropdown(label="즐겨찾기 활동(선택하면 활동 입력에 채워짐)", choices=[], value=None)
             fav_msg = gr.Markdown("")
 
-            # DateTime 위젯 + 텍스트 백업
             start_dt = gr.DateTime(label="시작 일시(위젯)", include_time=True)
             start_dt_text = gr.Textbox(label="시작 일시(백업 입력)", placeholder="YYYY-MM-DD HH:MM", lines=1)
 
@@ -742,6 +703,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         btn_done = gr.Button("완료")
         btn_addr_confirm = gr.Button("주소 선택 완료")
 
+    # loads
     demo.load(fn=render_home, inputs=None, outputs=home_html)
     demo.load(fn=draw_map, inputs=None, outputs=map_html)
     demo.load(fn=lambda: gr.update(choices=db_list_favorites(), value=None), inputs=None, outputs=fav_dropdown)
@@ -762,30 +724,34 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr, fab],
     )
 
-    # address
+    # address navigation
     btn_open_addr.click(fn=goto_addr, inputs=None,
                         outputs=[main_view, addr_view, addr_candidates, addr_pick, chosen_text, msg_addr])
     btn_back.click(fn=back_to_main, inputs=None, outputs=[main_view, addr_view, msg_addr])
 
+    # search
     btn_addr_search.click(fn=addr_search, inputs=[addr_query],
                           outputs=[addr_candidates, addr_pick, chosen_text, msg_addr])
-    addr_pick.change(fn=on_pick, inputs=[addr_pick], outputs=[chosen_text])
 
-    btn_addr_confirm.click(
-        fn=confirm_addr,
-        inputs=[addr_candidates, addr_pick, addr_detail_in],
-        outputs=[msg_addr, addr_confirmed_h, addr_detail_h, addr_lat_h, addr_lng_h, main_view, addr_view],
+    # ✅ 핵심: 선택 순간 hidden 저장
+    addr_pick.change(
+        fn=stage_addr_on_pick,
+        inputs=[addr_candidates, addr_pick],
+        outputs=[chosen_text, addr_confirmed_h, addr_lat_h, addr_lng_h],
     )
 
+    # ✅ 상세 입력 순간 hidden 저장
+    addr_detail_in.change(fn=stage_detail_on_change, inputs=[addr_detail_in], outputs=[addr_detail_h])
+
+    # 메인에 선택 결과 표시
     addr_confirmed_h.change(fn=show_chosen_place, inputs=[addr_confirmed_h, addr_detail_h], outputs=[chosen_place_view])
     addr_detail_h.change(fn=show_chosen_place, inputs=[addr_confirmed_h, addr_detail_h], outputs=[chosen_place_view])
 
-    # favorites
-    def addfav_then_reload(a):
-        m, _ = add_fav_from_activity(a)
-        return m, gr.update(choices=db_list_favorites(), value=None)
+    # ✅ 주소 선택 완료 버튼은 그냥 뒤로 역할만
+    btn_addr_confirm.click(fn=addr_done_go_back, inputs=None, outputs=[main_view, addr_view, msg_addr])
 
-    btn_add_fav.click(fn=addfav_then_reload, inputs=[activity_text], outputs=[fav_msg, fav_dropdown])
+    # favorites
+    btn_add_fav.click(fn=add_fav_from_activity, inputs=[activity_text], outputs=[fav_msg, fav_dropdown])
     fav_dropdown.change(fn=pick_fav_to_activity, inputs=[fav_dropdown], outputs=[activity_text])
 
     # create then close on success
@@ -825,7 +791,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     )
 
 # -------------------------
-# FastAPI
+# FastAPI (map)
 # -------------------------
 app = FastAPI()
 
