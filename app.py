@@ -31,6 +31,9 @@ def db_conn():
 
 def db_init():
     with db_conn() as con:
+        # 기존 테이블 삭제하고 새로 생성 (개발 중일 때만)
+        con.execute("DROP TABLE IF EXISTS spaces")
+        
         con.execute("""
         CREATE TABLE IF NOT EXISTS spaces (
             id TEXT PRIMARY KEY,
@@ -380,8 +383,22 @@ def create_event(activity_text, date_str, start_time_str, duration_mins,
         return f"⚠️ 저장 실패: {str(e)}", render_home(), draw_map()
 
 # -------------------------
-# 장소 검색
+# 모달 열기/닫기
 # -------------------------
+def open_modal():
+    return (
+        gr.update(visible=True),  # overlay
+        gr.update(visible=True),  # modal_sheet
+        now_kst().strftime("%Y-%m-%d"),  # date
+        now_kst().strftime("%H:%M"),  # time
+        ""  # msg clear
+    )
+
+def close_modal():
+    return (
+        gr.update(visible=False),  # overlay
+        gr.update(visible=False),  # modal_sheet
+    )
 def search_place(query):
     cands, err = kakao_keyword_search(query, size=10)
     if err:
@@ -554,79 +571,89 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
         with gr.Tab("지도"):
             map_html = gr.HTML()
             map_refresh_btn = gr.Button("🔄 지도 새로고침")
+    
+    # Floating Action Button
+    with gr.Row(elem_classes=["fab-container"]):
+        fab_btn = gr.Button("+", elem_id="fab")
+    
+    # Modal Overlay
+    modal_overlay = gr.HTML("<div></div>", visible=False, elem_classes=["modal-overlay"])
+    
+    # Modal Sheet
+    with gr.Column(visible=False, elem_classes=["modal-sheet"]) as modal_sheet:
+        with gr.Row(elem_classes=["modal-header"]):
+            gr.HTML("<div class='modal-title'>새 공간 열기</div>")
+            close_btn = gr.Button("✕", size="sm")
         
-        with gr.Tab("새 공간 열기"):
-            gr.Markdown("### 📝 이벤트 정보")
-            
-            with gr.Row():
-                activity_text = gr.Textbox(
-                    label="활동명", 
-                    placeholder="예: 산책, 커피, 스터디…",
-                    scale=3
-                )
-            
-            photo_np = gr.Image(label="📸 사진 (선택사항)", type="numpy", height=200)
-            
-            gr.Markdown("### 📅 날짜와 시간")
-            
-            with gr.Row():
-                date_input = gr.Textbox(
-                    label="날짜",
-                    placeholder="YYYY-MM-DD",
-                    value=now_kst().strftime("%Y-%m-%d"),
-                    scale=1
-                )
-                start_time_input = gr.Textbox(
-                    label="시작 시간",
-                    placeholder="HH:MM",
-                    value=now_kst().strftime("%H:%M"),
-                    scale=1
-                )
-                duration_input = gr.Dropdown(
-                    label="지속 시간",
-                    choices=[15, 30, 45, 60, 90, 120],
-                    value=30,
-                    scale=1
-                )
-            
-            gr.Markdown("### 👥 인원")
-            
-            with gr.Row():
-                capacity_unlimited = gr.Checkbox(
-                    label="제한 없음",
-                    value=True
-                )
-                cap_max = gr.Slider(
-                    label="최대 인원",
-                    minimum=1,
-                    maximum=10,
-                    value=4,
-                    step=1
-                )
-            
-            gr.Markdown("### 📍 장소")
-            
-            with gr.Row():
-                place_query = gr.Textbox(
-                    label="장소 검색",
-                    placeholder="예: 포항시청, 영일대, 포항역…",
-                    scale=3
-                )
-                search_btn = gr.Button("🔍 검색", scale=1)
-            
-            search_msg = gr.Markdown("")
-            
-            place_dropdown = gr.Dropdown(
-                label="검색 결과",
-                choices=[],
-                value=None
+        gr.Markdown("### 📝 이벤트 정보")
+        
+        activity_text = gr.Textbox(
+            label="활동명", 
+            placeholder="예: 산책, 커피, 스터디…"
+        )
+        
+        photo_np = gr.Image(label="📸 사진 (선택사항)", type="numpy", height=200)
+        
+        gr.Markdown("### 📅 날짜와 시간")
+        
+        with gr.Row():
+            date_input = gr.Textbox(
+                label="날짜",
+                placeholder="YYYY-MM-DD",
+                value=now_kst().strftime("%Y-%m-%d"),
+                scale=1
             )
-            
-            gr.Markdown("---")
-            
-            msg_output = gr.Markdown("")
-            
-            create_btn = gr.Button("✅ 이벤트 생성", variant="primary", size="lg")
+            start_time_input = gr.Textbox(
+                label="시작 시간",
+                placeholder="HH:MM",
+                value=now_kst().strftime("%H:%M"),
+                scale=1
+            )
+            duration_input = gr.Dropdown(
+                label="지속 시간",
+                choices=[15, 30, 45, 60, 90, 120],
+                value=30,
+                scale=1
+            )
+        
+        gr.Markdown("### 👥 인원")
+        
+        with gr.Row():
+            capacity_unlimited = gr.Checkbox(
+                label="제한 없음",
+                value=True
+            )
+            cap_max = gr.Slider(
+                label="최대 인원",
+                minimum=1,
+                maximum=10,
+                value=4,
+                step=1
+            )
+        
+        gr.Markdown("### 📍 장소")
+        
+        with gr.Row():
+            place_query = gr.Textbox(
+                label="장소 검색",
+                placeholder="예: 포항시청, 영일대, 포항역…",
+                scale=3
+            )
+            search_btn = gr.Button("🔍 검색", scale=1)
+        
+        search_msg = gr.Markdown("")
+        
+        place_dropdown = gr.Dropdown(
+            label="검색 결과",
+            choices=[],
+            value=None
+        )
+        
+        msg_output = gr.Markdown("")
+        
+        with gr.Row(elem_classes=["modal-footer"]):
+            cancel_btn = gr.Button("취소", variant="secondary")
+            create_btn = gr.Button("✅ 생성", variant="primary")
     
     # 초기 로드
     demo.load(fn=render_home, outputs=home_html)
@@ -635,6 +662,22 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
     # 새로고침
     refresh_btn.click(fn=render_home, outputs=home_html)
     map_refresh_btn.click(fn=draw_map, outputs=map_html)
+    
+    # 모달 열기/닫기
+    fab_btn.click(
+        fn=open_modal,
+        outputs=[modal_overlay, modal_sheet, date_input, start_time_input, msg_output]
+    )
+    
+    close_btn.click(
+        fn=close_modal,
+        outputs=[modal_overlay, modal_sheet]
+    )
+    
+    cancel_btn.click(
+        fn=close_modal,
+        outputs=[modal_overlay, modal_sheet]
+    )
     
     # 장소 검색
     def search_and_store(query):
@@ -673,15 +716,37 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
         outputs=[selected_place_state]
     )
     
-    # 이벤트 생성
+    # 이벤트 생성 후 모달 닫기
+    def create_and_close(activity_text, date_str, start_time_str, duration_mins,
+                         capacity_unlimited, cap_max, photo_np, selected_place_json):
+        msg, home, mapv = create_event(
+            activity_text, date_str, start_time_str, duration_mins,
+            capacity_unlimited, cap_max, photo_np, selected_place_json
+        )
+        
+        # 성공 시 모달 닫기
+        if msg.startswith("✅"):
+            return (
+                msg, home, mapv,
+                gr.update(visible=False),  # overlay
+                gr.update(visible=False),  # modal
+            )
+        else:
+            # 실패 시 모달 유지
+            return (
+                msg, home, mapv,
+                gr.update(visible=True),
+                gr.update(visible=True),
+            )
+    
     create_btn.click(
-        fn=create_event,
+        fn=create_and_close,
         inputs=[
             activity_text, date_input, start_time_input, duration_input,
             capacity_unlimited, cap_max, photo_np,
             selected_place_state
         ],
-        outputs=[msg_output, home_html, map_html]
+        outputs=[msg_output, home_html, map_html, modal_overlay, modal_sheet]
     )
 
 # -------------------------
