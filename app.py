@@ -1,7 +1,8 @@
 # =========================================================
 # OSEYO — FIXED MODAL (Gradio 4.44+ 안정)
-# 핵심:
-# - elem_id 대신 elem_classes로 CSS를 100% 먹게 함
+# 핵심 수정(중요):
+# - main_view/addr_view를 sheet 바깥에서 만들면 "접속하자마자" 폼이 본문에 렌더링됨
+# - ✅ main_view/addr_view를 반드시 `with sheet:` 안에서 생성하도록 수정함
 # - + 버튼 => 고정 모달(오버레이+시트+푸터)로 뜸
 # - 카카오 지도 iframe 유지
 # =========================================================
@@ -411,30 +412,30 @@ def open_modal():
 
 def close_modal():
     return (
-        gr.update(visible=False),
-        gr.update(visible=False),
-        gr.update(visible=False),
-        gr.update(visible=True),
-        gr.update(visible=False),
-        "",
-        "",
+        gr.update(visible=False),  # overlay
+        gr.update(visible=False),  # sheet
+        gr.update(visible=False),  # footer
+        gr.update(visible=True),   # main_view
+        gr.update(visible=False),  # addr_view
+        "",                        # msg_main
+        "",                        # msg_addr
     )
 
 def goto_addr():
     return (
-        gr.update(visible=False),
-        gr.update(visible=True),
-        [],
-        gr.update(choices=[], value=None),
-        "선택: 없음",
-        "",
+        gr.update(visible=False),  # main_view
+        gr.update(visible=True),   # addr_view
+        [],                        # addr_candidates
+        gr.update(choices=[], value=None),  # dropdown reset
+        "선택: 없음",              # chosen_text
+        "",                        # msg_addr
     )
 
 def back_to_main():
     return (
-        gr.update(visible=True),
-        gr.update(visible=False),
-        "",
+        gr.update(visible=True),   # main_view
+        gr.update(visible=False),  # addr_view
+        "",                        # msg_addr
     )
 
 
@@ -576,7 +577,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 .mapWrap{ width:100vw; max-width:100vw; margin:0; padding:0; overflow:hidden; }
 .mapFrame{ width:100vw; height: calc(100vh - 220px); border:0; border-radius:0; }
 
-/* ✅ 여기부터: class 기반 모달 고정 */
+/* ✅ class 기반 모달 고정 */
 .oseyo_overlay{
   position:fixed !important;
   inset:0 !important;
@@ -661,11 +662,9 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     sheet = gr.Column(visible=False, elem_classes=["oseyo_sheet"])
     footer = gr.Row(visible=False, elem_classes=["oseyo_footer"])
 
-    main_view = gr.Column(visible=True)
-    addr_view = gr.Column(visible=False)
-
+    # ✅✅ 핵심 수정: main_view/addr_view는 반드시 sheet 안에서 생성해야 한다
     with sheet:
-        with main_view:
+        with gr.Column(visible=True) as main_view:
             gr.Markdown("### 열어놓기")
             photo_np = gr.Image(label="사진(선택)", type="numpy")
             activity_text = gr.Textbox(label="활동", placeholder="예: 산책, 커피, 스터디…", lines=1)
@@ -679,7 +678,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
             btn_open_addr = gr.Button("장소 검색하기")
             msg_main = gr.Markdown("")
 
-        with addr_view:
+        with gr.Column(visible=False) as addr_view:
             gr.Markdown("### 장소 검색")
             addr_query = gr.Textbox(label="주소/장소명", placeholder="예: 포항시청, 영일대, 포항테크노파크 …", lines=1)
             btn_addr_search = gr.Button("검색")
@@ -694,24 +693,44 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         btn_done = gr.Button("완료")
         btn_addr_confirm = gr.Button("주소 선택 완료")
 
+    # 초기 로드
     demo.load(fn=render_home, inputs=None, outputs=home_html)
     demo.load(fn=draw_map, inputs=None, outputs=map_html)
     refresh_btn.click(fn=render_home, inputs=None, outputs=home_html)
     map_refresh.click(fn=draw_map, inputs=None, outputs=map_html)
 
-    fab.click(fn=open_modal, inputs=None,
-              outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr, start_dt, end_dt])
+    # 모달 열기/닫기
+    fab.click(
+        fn=open_modal,
+        inputs=None,
+        outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr, start_dt, end_dt]
+    )
 
-    btn_close.click(fn=close_modal, inputs=None,
-                    outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr])
+    btn_close.click(
+        fn=close_modal,
+        inputs=None,
+        outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr]
+    )
 
-    btn_open_addr.click(fn=goto_addr, inputs=None,
-                        outputs=[main_view, addr_view, addr_candidates, addr_pick, chosen_text, msg_addr])
+    # 장소 검색 화면 이동
+    btn_open_addr.click(
+        fn=goto_addr,
+        inputs=None,
+        outputs=[main_view, addr_view, addr_candidates, addr_pick, chosen_text, msg_addr]
+    )
 
-    btn_back.click(fn=back_to_main, inputs=None, outputs=[main_view, addr_view, msg_addr])
+    btn_back.click(
+        fn=back_to_main,
+        inputs=None,
+        outputs=[main_view, addr_view, msg_addr]
+    )
 
-    btn_addr_search.click(fn=addr_search, inputs=[addr_query],
-                          outputs=[addr_candidates, addr_pick, chosen_text, msg_addr])
+    # 주소 검색 / 선택 / 확정
+    btn_addr_search.click(
+        fn=addr_search,
+        inputs=[addr_query],
+        outputs=[addr_candidates, addr_pick, chosen_text, msg_addr]
+    )
 
     addr_pick.change(fn=on_pick, inputs=[addr_pick], outputs=[chosen_text])
 
@@ -724,6 +743,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     addr_confirmed.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
     addr_detail.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
 
+    # 이벤트 생성 + 성공 시 모달 닫기
     def create_then_close(*args):
         msg, home, mapv = create_event(*args)
         if isinstance(msg, str) and msg.startswith("✅"):
