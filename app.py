@@ -1,9 +1,9 @@
 # =========================================================
-# OSEYO — FINAL STABLE (Gradio + FastAPI, Render)
-# 핵심 수정:
-# 1) CSS를 gr.Blocks(css=CSS)로 적용 (style 태그 방식 제거)
-# 2) folium/leaflet 제거, Kakao 지도 iframe 유지
-# 3) 모달/오버레이 1개 + 화면전환(메인/주소) => 잔상 방지
+# OSEYO — FIXED MODAL (Gradio 4.44+ 안정)
+# 핵심:
+# - elem_id 대신 elem_classes로 CSS를 100% 먹게 함
+# - + 버튼 => 고정 모달(오버레이+시트+푸터)로 뜸
+# - 카카오 지도 iframe 유지
 # =========================================================
 
 import os, uuid, base64, io, sqlite3, json
@@ -30,8 +30,6 @@ def now_kst():
 def normalize_dt(v):
     if isinstance(v, datetime):
         return v if v.tzinfo else v.replace(tzinfo=KST)
-    if isinstance(v, (int, float)):
-        return datetime.fromtimestamp(v, tz=KST)
     return None
 
 def fmt_period(st_iso: str, en_iso: str) -> str:
@@ -115,20 +113,6 @@ def db_init_and_migrate():
         if "created_at" not in cols: addcol("ALTER TABLE spaces ADD COLUMN created_at TEXT")
         con.commit()
 
-        cols = set(_cols(con))
-        if "photo" in cols:
-            con.execute("UPDATE spaces SET photo_b64 = COALESCE(photo_b64, photo, '') WHERE (photo_b64 IS NULL OR photo_b64='')")
-        if "start" in cols:
-            con.execute("UPDATE spaces SET start_iso = COALESCE(start_iso, start) WHERE (start_iso IS NULL OR start_iso='')")
-        if "end" in cols:
-            con.execute("UPDATE spaces SET end_iso = COALESCE(end_iso, end) WHERE (end_iso IS NULL OR end_iso='')")
-        if "addr" in cols:
-            con.execute("UPDATE spaces SET address_confirmed = COALESCE(address_confirmed, addr) WHERE (address_confirmed IS NULL OR address_confirmed='')")
-        if "detail" in cols:
-            con.execute("UPDATE spaces SET address_detail = COALESCE(address_detail, detail, '') WHERE (address_detail IS NULL OR address_detail='')")
-        if "created" in cols:
-            con.execute("UPDATE spaces SET created_at = COALESCE(created_at, created) WHERE (created_at IS NULL OR created_at='')")
-
         con.execute("UPDATE spaces SET created_at = COALESCE(created_at, ?) WHERE created_at IS NULL OR created_at=''", (now_kst().isoformat(),))
         con.commit()
 
@@ -176,12 +160,6 @@ def db_list_spaces():
 
     out=[]
     for r in rows:
-        try:
-            lat = float(r[7]) if r[7] is not None else None
-            lng = float(r[8]) if r[8] is not None else None
-        except:
-            lat, lng = None, None
-
         out.append({
             "id": r[0],
             "title": r[1],
@@ -190,8 +168,8 @@ def db_list_spaces():
             "end_iso": r[4] or "",
             "address_confirmed": r[5] or "",
             "address_detail": r[6] or "",
-            "lat": lat,
-            "lng": lng,
+            "lat": float(r[7]) if r[7] is not None else None,
+            "lng": float(r[8]) if r[8] is not None else None,
             "capacityEnabled": bool(r[9]) if r[9] is not None else False,
             "capacityMax": r[10],
             "hidden": bool(r[11]) if r[11] is not None else False,
@@ -506,60 +484,56 @@ def show_chosen_place(addr_confirmed, addr_detail):
 # -------------------------
 def create_event(activity_text, start_dt_val, end_dt_val, capacity_unlimited, cap_max, photo_np,
                  addr_confirmed, addr_detail, addr_lat, addr_lng):
-    try:
-        act = (activity_text or "").strip()
-        if not act:
-            return "⚠️ 활동을 입력해 달라.", render_home(), draw_map()
+    act = (activity_text or "").strip()
+    if not act:
+        return "⚠️ 활동을 입력해 달라.", render_home(), draw_map()
 
-        if (not addr_confirmed) or (addr_lat is None) or (addr_lng is None):
-            return "⚠️ 장소를 선택해 달라. (장소 검색하기)", render_home(), draw_map()
+    if (not addr_confirmed) or (addr_lat is None) or (addr_lng is None):
+        return "⚠️ 장소를 선택해 달라. (장소 검색하기)", render_home(), draw_map()
 
-        st = normalize_dt(start_dt_val)
-        en = normalize_dt(end_dt_val)
-        if st is None or en is None:
-            return "⚠️ 시작/종료 일시를 선택해 달라.", render_home(), draw_map()
+    st = normalize_dt(start_dt_val)
+    en = normalize_dt(end_dt_val)
+    if st is None or en is None:
+        return "⚠️ 시작/종료 일시를 선택해 달라.", render_home(), draw_map()
 
-        st = st.astimezone(KST); en = en.astimezone(KST)
-        if en <= st:
-            return "⚠️ 종료 일시는 시작 일시보다 뒤여야 한다.", render_home(), draw_map()
+    st = st.astimezone(KST); en = en.astimezone(KST)
+    if en <= st:
+        return "⚠️ 종료 일시는 시작 일시보다 뒤여야 한다.", render_home(), draw_map()
 
-        new_id = uuid.uuid4().hex[:8]
-        photo_b64 = image_np_to_b64(photo_np)
+    new_id = uuid.uuid4().hex[:8]
+    photo_b64 = image_np_to_b64(photo_np)
 
-        capacityEnabled = (not bool(capacity_unlimited))
-        cap_max_val = None
-        if capacityEnabled:
-            try:
-                cap_max_val = int(cap_max)
-            except:
-                cap_max_val = 4
-            cap_max_val = max(1, min(cap_max_val, 10))
+    capacityEnabled = (not bool(capacity_unlimited))
+    cap_max_val = None
+    if capacityEnabled:
+        try:
+            cap_max_val = int(cap_max)
+        except:
+            cap_max_val = 4
+        cap_max_val = max(1, min(cap_max_val, 10))
 
-        title = act if len(act) <= 24 else act[:24] + "…"
+    title = act if len(act) <= 24 else act[:24] + "…"
 
-        db_insert_space({
-            "id": new_id,
-            "title": title,
-            "photo_b64": photo_b64,
-            "start_iso": st.isoformat(),
-            "end_iso": en.isoformat(),
-            "address_confirmed": addr_confirmed,
-            "address_detail": (addr_detail or "").strip(),
-            "lat": float(addr_lat),
-            "lng": float(addr_lng),
-            "capacityEnabled": capacityEnabled,
-            "capacityMax": cap_max_val,
-            "hidden": False,
-        })
+    db_insert_space({
+        "id": new_id,
+        "title": title,
+        "photo_b64": photo_b64,
+        "start_iso": st.isoformat(),
+        "end_iso": en.isoformat(),
+        "address_confirmed": addr_confirmed,
+        "address_detail": (addr_detail or "").strip(),
+        "lat": float(addr_lat),
+        "lng": float(addr_lng),
+        "capacityEnabled": capacityEnabled,
+        "capacityMax": cap_max_val,
+        "hidden": False,
+    })
 
-        return f"✅ 등록 완료: '{title}'", render_home(), draw_map()
-
-    except Exception as e:
-        return f"❌ 등록 중 오류: {type(e).__name__}", render_home(), draw_map()
+    return f"✅ 등록 완료: '{title}'", render_home(), draw_map()
 
 
 # -------------------------
-# CSS  ✅ 여기가 핵심: Blocks(css=CSS)로 적용됨
+# CSS (class 기반으로 확실히 먹인다)
 # -------------------------
 CSS = r"""
 :root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --card:#ffffffcc; --danger:#ef4444; }
@@ -602,13 +576,14 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 .mapWrap{ width:100vw; max-width:100vw; margin:0; padding:0; overflow:hidden; }
 .mapFrame{ width:100vw; height: calc(100vh - 220px); border:0; border-radius:0; }
 
+/* ✅ 여기부터: class 기반 모달 고정 */
 .oseyo_overlay{
   position:fixed !important;
   inset:0 !important;
   background:rgba(0,0,0,0.35) !important;
   z-index:99990 !important;
 }
-#oseyo_sheet{
+.oseyo_sheet{
   position:fixed !important;
   left:50% !important; transform:translateX(-50%) !important;
   bottom:0 !important;
@@ -623,7 +598,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   z-index:99991 !important;
   box-shadow:0 -12px 40px rgba(0,0,0,0.25) !important;
 }
-#oseyo_footer{
+.oseyo_footer{
   position:fixed !important;
   left:50% !important; transform:translateX(-50%) !important;
   bottom:0 !important;
@@ -634,18 +609,17 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   z-index:99992 !important;
 }
 
-#oseyo_sheet input, #oseyo_sheet textarea, #oseyo_sheet select{
+.oseyo_sheet input, .oseyo_sheet textarea, .oseyo_sheet select{
   width:100% !important;
   min-width:0 !important;
 }
 
-#oseyo_fab{
+.oseyo_fab{
   position:fixed !important;
   right:22px !important; bottom:22px !important;
   z-index:999999 !important;
-  width:64px !important; height:64px !important;
 }
-#oseyo_fab button{
+.oseyo_fab button{
   width:64px !important; height:64px !important;
   min-width:64px !important;
   border-radius:50% !important;
@@ -660,7 +634,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 """
 
 # -------------------------
-# UI  ✅ 여기서 CSS 적용
+# UI
 # -------------------------
 with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     addr_confirmed = gr.State("")
@@ -679,11 +653,13 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
             map_html = gr.HTML()
             map_refresh = gr.Button("지도 새로고침")
 
-    fab = gr.Button("+", elem_id="oseyo_fab")
+    # ✅ FAB: class로 고정
+    fab = gr.Button("+", elem_classes=["oseyo_fab"])
 
-    overlay = gr.HTML("<div class='oseyo_overlay'></div>", visible=False)
-    sheet = gr.Column(visible=False, elem_id="oseyo_sheet")
-    footer = gr.Row(visible=False, elem_id="oseyo_footer")
+    # ✅ overlay/sheet/footer: class로 고정
+    overlay = gr.HTML("<div></div>", visible=False, elem_classes=["oseyo_overlay"])
+    sheet = gr.Column(visible=False, elem_classes=["oseyo_sheet"])
+    footer = gr.Row(visible=False, elem_classes=["oseyo_footer"])
 
     main_view = gr.Column(visible=True)
     addr_view = gr.Column(visible=False)
