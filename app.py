@@ -1,13 +1,11 @@
 # =========================================================
-# OSEYO — STABLE MODAL + FIXED CREATE + FIXED MAP + FAVORITES
-# (Gradio 4.44+ / Render 배포 안정)
-#
-# Fixes:
-# - FAB(+)가 완료 버튼 가리는 문제: 모달 열리면 FAB 숨김
-# - FAB가 화면 하단에 "바"로 자리 차지하는 문제: wrap height:0 처리
-# - DateTime이 str로 들어오는 케이스 처리(일시 선택하라 버그 해결)
-# - 지도 data: iframe 차단(CSP) 대비: FastAPI로 /kakao_map 서빙
-# - 즐겨찾는 활동 추가/선택 기능(DB 저장)
+# OSEYO — FINAL STABLE (Gradio 4.44+ / Render)
+# 요청사항 전부 반영:
+# 1) + 플로팅 버튼이 완료 버튼/푸터를 가리면 안 됨  -> 모달 열리면 FAB 숨김, 닫으면 다시 표시
+# 2) DateTime: 캘린더 + 시/분 선택 가능해야 함       -> flatpickr z-index fix + showPicker 보강
+# 3) 선택했는데도 "일시 선택" 오류로 생성 안 됨       -> normalize_dt 초강력 파서(여러 입력형태 흡수)
+# 4) 지도 안 나옴                                   -> data: iframe 대신 FastAPI가 /kakao_map HTML 직접 서빙
+# 5) 즐겨찾는 활동 추가 버튼 복구                     -> 활동 입력 옆 +즐겨찾기, 드롭다운 선택 시 입력 자동 채움
 # =========================================================
 
 import os, uuid, base64, io, sqlite3, json
@@ -18,9 +16,8 @@ import requests
 from PIL import Image
 import gradio as gr
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, HTMLResponse
-from fastapi import Request
 
 # -------------------------
 # CONFIG
@@ -34,13 +31,27 @@ def now_kst():
 
 def normalize_dt(v):
     """
-    Gradio DateTime이 환경에 따라:
-    - datetime 객체로 오기도 하고
-    - '2026-01-05T15:13:00' 같은 문자열로 오기도 함
-    둘 다 처리.
+    gr.DateTime 값이 환경마다 형태가 다르다.
+    - datetime
+    - "2026-01-05 15:40:00" (공백)
+    - "2026-01-05T15:40:00" (T)
+    - {"value": "..."} 같은 dict
+    - [..] 같은 list/tuple
+    - timestamp(ms/s)
+    전부 최대한 흡수해서 datetime(KST)로 만든다.
     """
     if v is None:
         return None
+
+    if isinstance(v, dict):
+        v = v.get("value") or v.get("data") or v.get("datetime") or v.get("date") or None
+        if v is None:
+            return None
+
+    if isinstance(v, (list, tuple)):
+        if len(v) == 0:
+            return None
+        v = v[0]
 
     if isinstance(v, datetime):
         return v if v.tzinfo else v.replace(tzinfo=KST)
@@ -49,11 +60,18 @@ def normalize_dt(v):
         s = v.strip()
         if not s:
             return None
+        s = s.replace(" ", "T")
         try:
-            # "2026-01-05 15:13:00" 형태도 올 수 있어 replace 처리
-            s = s.replace(" ", "T")
             dt = datetime.fromisoformat(s)
             return dt if dt.tzinfo else dt.replace(tzinfo=KST)
+        except:
+            return None
+
+    if isinstance(v, (int, float)):
+        try:
+            if v > 1e12:  # ms
+                v = v / 1000.0
+            return datetime.fromtimestamp(v, tz=KST)
         except:
             return None
 
@@ -119,15 +137,12 @@ def db_init_and_migrate():
             created_at TEXT NOT NULL
         );
         """)
-
-        # 즐겨찾기 활동
         con.execute("""
         CREATE TABLE IF NOT EXISTS favorites (
             activity TEXT PRIMARY KEY,
             created_at TEXT NOT NULL
         );
         """)
-
         con.commit()
 
 db_init_and_migrate()
@@ -324,7 +339,7 @@ def render_home():
 
 
 # -------------------------
-# 지도: FastAPI에서 HTML로 직접 서빙 (CSP/data: 차단 대응)
+# 지도: FastAPI에서 HTML 직접 서빙
 # -------------------------
 def map_points_payload():
     spaces = db_list_spaces()
@@ -343,7 +358,6 @@ def map_points_payload():
     return points
 
 def draw_map():
-    # iframe은 FastAPI 라우트로
     ts = int(now_kst().timestamp())
     return f"""
     <div class="mapWrap">
@@ -353,7 +367,7 @@ def draw_map():
 
 
 # -------------------------
-# Modal control (FAB 숨김 포함)
+# Modal control
 # -------------------------
 def open_modal():
     st = now_kst().replace(second=0, microsecond=0)
@@ -368,7 +382,7 @@ def open_modal():
         "",                         # msg_addr
         st,                         # start_dt
         en,                         # end_dt
-        gr.update(visible=False),   # fab (hide)
+        gr.update(visible=False),   # fab hide
     )
 
 def close_modal():
@@ -380,24 +394,24 @@ def close_modal():
         gr.update(visible=False),   # addr_view
         "",                         # msg_main
         "",                         # msg_addr
-        gr.update(visible=True),    # fab (show)
+        gr.update(visible=True),    # fab show
     )
 
 def goto_addr():
     return (
-        gr.update(visible=False),               # main_view
-        gr.update(visible=True),                # addr_view
-        [],                                     # addr_candidates
-        gr.update(choices=[], value=None),      # dropdown reset
-        "선택: 없음",                           # chosen_text
-        "",                                     # msg_addr
+        gr.update(visible=False),
+        gr.update(visible=True),
+        [],
+        gr.update(choices=[], value=None),
+        "선택: 없음",
+        "",
     )
 
 def back_to_main():
     return (
-        gr.update(visible=True),    # main_view
-        gr.update(visible=False),   # addr_view
-        "",                         # msg_addr
+        gr.update(visible=True),
+        gr.update(visible=False),
+        "",
     )
 
 
@@ -446,8 +460,7 @@ def show_chosen_place(addr_confirmed, addr_detail):
 # Favorites handlers
 # -------------------------
 def load_favs():
-    favs = db_list_favorites()
-    return gr.update(choices=favs, value=None)
+    return gr.update(choices=db_list_favorites(), value=None)
 
 def add_fav_from_activity(activity_text):
     a = (activity_text or "").strip()
@@ -514,7 +527,7 @@ def create_event(activity_text, start_dt_val, end_dt_val, capacity_unlimited, ca
 
 
 # -------------------------
-# CSS
+# CSS (DateTime picker z-index fix 포함)
 # -------------------------
 CSS = r"""
 :root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --card:#ffffffcc; --danger:#ef4444; }
@@ -558,7 +571,14 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 .mapWrap{ width:100vw; max-width:100vw; margin:0; padding:0; overflow:hidden; }
 .mapFrame{ width:100vw; height: calc(100vh - 220px); border:0; border-radius:0; }
 
-/* ✅ 모달 */
+/* ✅ DateTime picker(flatpickr)가 모달 뒤로 숨는 문제 방지 */
+.flatpickr-calendar,
+.flatpickr-time,
+.flatpickr-dropdown {
+  z-index: 1000005 !important;
+}
+
+/* 모달 */
 .oseyo_overlay{
   position:fixed !important;
   inset:0 !important;
@@ -576,7 +596,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   background:var(--bg) !important;
   border:1px solid var(--line) !important; border-bottom:0 !important;
   border-radius:26px 26px 0 0 !important;
-  padding:22px 16px 160px 16px !important; /* footer 공간 */
+  padding:22px 16px 170px 16px !important;
   z-index:99991 !important;
   box-shadow:0 -12px 40px rgba(0,0,0,0.25) !important;
 }
@@ -596,7 +616,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   min-width:0 !important;
 }
 
-/* ✅ FAB: 레이아웃 자리(바) 생기는 문제를 wrap height:0로 제거 */
+/* FAB: 레이아웃 자리(바) 생기는 문제 제거 */
 .oseyo_fab_wrap{
   height:0 !important;
   overflow:visible !important;
@@ -604,7 +624,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 .oseyo_fab{
   position:fixed !important;
   right:22px !important; bottom:22px !important;
-  z-index:99980 !important; /* footer보다 낮게(그리고 모달 열리면 숨김) */
+  z-index:99980 !important;
 }
 .oseyo_fab button{
   width:64px !important; height:64px !important;
@@ -621,10 +641,41 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 """
 
 # -------------------------
+# JS 보강: 모달 열렸을 때 showPicker 가능하면 호출(브라우저 기본 피커)
+# * flatpickr가 정상으로 떠도 무해
+# -------------------------
+PICKER_FIX_HTML = r"""
+<script>
+(function(){
+  function tryFix(){
+    const sheet = document.querySelector('.oseyo_sheet');
+    if(!sheet) return;
+
+    // DateTime 입력은 대개 input[type="text"]로 렌더되고 값이 2026-..로 시작
+    const inputs = sheet.querySelectorAll('input');
+    inputs.forEach(inp=>{
+      const v = (inp.value || '').trim();
+      if(/^\\d{4}-\\d{2}-\\d{2}/.test(v)){
+        try{
+          // 일부 브라우저에서만 지원
+          inp.step = 60;
+          inp.addEventListener('focus', ()=>{ if(inp.showPicker) inp.showPicker(); });
+          inp.addEventListener('click', ()=>{ if(inp.showPicker) inp.showPicker(); });
+        }catch(e){}
+      }
+    });
+  }
+  window.addEventListener('load', ()=>setTimeout(tryFix, 800));
+  document.addEventListener('click', ()=>setTimeout(tryFix, 200));
+})();
+</script>
+"""
+
+# -------------------------
 # UI
 # -------------------------
 with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
-    # address states
+    # states
     addr_confirmed = gr.State("")
     addr_detail = gr.State("")
     addr_lat = gr.State(None)
@@ -632,6 +683,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     addr_candidates = gr.State([])
 
     gr.Markdown("## 지금, 열려 있습니다\n원하시면 오세요")
+    gr.HTML(PICKER_FIX_HTML)
 
     with gr.Tabs():
         with gr.Tab("탐색"):
@@ -641,7 +693,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
             map_html = gr.HTML()
             map_refresh = gr.Button("지도 새로고침")
 
-    # ✅ FAB: wrap으로 자리 차지 제거
+    # FAB (wrap으로 자리 차지 제거)
     with gr.Row(elem_classes=["oseyo_fab_wrap"]):
         fab = gr.Button("+", elem_classes=["oseyo_fab"])
 
@@ -654,12 +706,15 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
             gr.Markdown("### 열어놓기")
             photo_np = gr.Image(label="사진(선택)", type="numpy")
 
-            # 활동 + 즐겨찾기 버튼
             with gr.Row():
                 activity_text = gr.Textbox(label="활동", placeholder="예: 산책, 커피, 스터디…", lines=1, scale=8)
                 btn_add_fav = gr.Button("＋ 즐겨찾기", scale=2)
 
-            fav_dropdown = gr.Dropdown(label="즐겨찾기 활동(선택하면 활동 입력에 채워짐)", choices=[], value=None)
+            fav_dropdown = gr.Dropdown(
+                label="즐겨찾기 활동(선택하면 활동 입력에 채워짐)",
+                choices=[],
+                value=None
+            )
             fav_msg = gr.Markdown("")
 
             start_dt = gr.DateTime(label="시작 일시", include_time=True)
@@ -687,7 +742,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         btn_done = gr.Button("완료")
         btn_addr_confirm = gr.Button("주소 선택 완료")
 
-    # Load
+    # loads
     demo.load(fn=render_home, inputs=None, outputs=home_html)
     demo.load(fn=draw_map, inputs=None, outputs=map_html)
     demo.load(fn=load_favs, inputs=None, outputs=fav_dropdown)
@@ -695,7 +750,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     refresh_btn.click(fn=render_home, inputs=None, outputs=home_html)
     map_refresh.click(fn=draw_map, inputs=None, outputs=map_html)
 
-    # FAB open -> hide FAB
+    # modal open/close (FAB hide/show)
     fab.click(
         fn=open_modal,
         inputs=None,
@@ -708,7 +763,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         outputs=[overlay, sheet, footer, main_view, addr_view, msg_main, msg_addr, fab],
     )
 
-    # Address flow
+    # address flow
     btn_open_addr.click(
         fn=goto_addr,
         inputs=None,
@@ -738,7 +793,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     addr_confirmed.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
     addr_detail.change(fn=show_chosen_place, inputs=[addr_confirmed, addr_detail], outputs=[chosen_place_view])
 
-    # Favorites
+    # favorites
     btn_add_fav.click(
         fn=add_fav_from_activity,
         inputs=[activity_text],
@@ -750,11 +805,11 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         outputs=[activity_text],
     )
 
-    # Create + close if success
+    # create + close if success
     def create_then_close(*args):
         msg, home, mapv = create_event(*args)
         if isinstance(msg, str) and msg.startswith("✅"):
-            # 성공: 모달 닫기 + FAB 다시 보이기 + 즐겨찾기 목록 갱신
+            # 성공: 닫기 + FAB 보이기 + 즐겨찾기 목록 갱신
             return (
                 msg, home, mapv,
                 gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
@@ -803,7 +858,6 @@ def delete(space_id: str):
 
 @app.get("/kakao_map")
 def kakao_map(request: Request):
-    # 지도 페이지를 직접 서빙 (data: iframe 차단 대비)
     if not KAKAO_JAVASCRIPT_KEY:
         return HTMLResponse("""
         <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/></head>
