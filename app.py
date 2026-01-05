@@ -456,33 +456,34 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 /* Floating Action Button */
 .fab-container { 
   position: fixed !important; 
-  right: 24px !important; 
-  bottom: 24px !important; 
+  right: 20px !important; 
+  bottom: 20px !important; 
   z-index: 9999 !important;
   height: 0 !important;
   overflow: visible !important;
 }
 
 .fab-container button {
-  width: 64px !important;
-  height: 64px !important;
-  min-width: 64px !important;
+  width: 56px !important;
+  height: 56px !important;
+  min-width: 56px !important;
+  min-height: 56px !important;
   border-radius: 50% !important;
   border: 0 !important;
   background: #2B2A27 !important;
   color: #FAF9F6 !important;
-  font-size: 32px !important;
-  font-weight: 400 !important;
-  line-height: 64px !important;
+  font-size: 28px !important;
+  font-weight: 300 !important;
+  line-height: 56px !important;
   padding: 0 !important;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.25) !important;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.2) !important;
   cursor: pointer !important;
   transition: all 0.2s ease !important;
 }
 
 .fab-container button:hover {
-  transform: scale(1.05) !important;
-  box-shadow: 0 12px 32px rgba(0,0,0,0.35) !important;
+  transform: scale(1.08) !important;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.3) !important;
 }
 
 /* Modal Overlay */
@@ -500,55 +501,90 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   left: 50% !important;
   top: 50% !important;
   transform: translate(-50%, -50%) !important;
-  width: min(600px, 92vw) !important;
-  max-height: 85vh !important;
+  width: min(580px, 90vw) !important;
+  max-height: 80vh !important;
   overflow-y: auto !important;
+  overflow-x: hidden !important;
   background: var(--bg) !important;
   border: 1px solid var(--line) !important;
-  border-radius: 24px !important;
-  padding: 24px !important;
+  border-radius: 20px !important;
+  padding: 20px !important;
   z-index: 10001 !important;
-  box-shadow: 0 24px 48px rgba(0,0,0,0.2) !important;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.15) !important;
+}
+
+.modal-sheet::-webkit-scrollbar {
+  width: 8px;
+}
+
+.modal-sheet::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.modal-sheet::-webkit-scrollbar-thumb {
+  background: #D1D5DB;
+  border-radius: 4px;
+}
+
+.modal-sheet::-webkit-scrollbar-thumb:hover {
+  background: #9CA3AF;
 }
 
 .modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
-  padding-bottom: 16px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
   border-bottom: 1px solid var(--line);
 }
 
 .modal-title {
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 900;
   color: var(--ink);
 }
 
 .modal-footer {
   display: flex;
-  gap: 12px;
-  margin-top: 24px;
+  gap: 10px;
+  margin-top: 20px;
   padding-top: 16px;
   border-top: 1px solid var(--line);
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
 }
 
 .modal-footer button {
   flex: 1;
-  padding: 14px !important;
-  border-radius: 12px !important;
+  padding: 12px !important;
+  border-radius: 10px !important;
   font-weight: 700 !important;
-  font-size: 15px !important;
+  font-size: 14px !important;
 }
 
 @media (max-width: 768px) {
   .rowcard{ grid-template-columns:1fr; padding-right:14px; }
   .thumb{ height:200px; }
   .modal-sheet {
-    width: 96vw !important;
-    max-height: 90vh !important;
-    padding: 20px !important;
+    width: 94vw !important;
+    max-height: 88vh !important;
+    padding: 16px !important;
+  }
+  .modal-title {
+    font-size: 18px !important;
+  }
+  .fab-container {
+    right: 16px !important;
+    bottom: 16px !important;
+  }
+  .fab-container button {
+    width: 52px !important;
+    height: 52px !important;
+    min-width: 52px !important;
+    min-height: 52px !important;
+    font-size: 24px !important;
   }
 }
 """
