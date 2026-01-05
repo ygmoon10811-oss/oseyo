@@ -769,10 +769,24 @@ def delete(space_id: str):
 @app.get("/kakao_map")
 def kakao_map():
     if not KAKAO_JAVASCRIPT_KEY:
-        return HTMLResponse("<html><body><h3>KAKAO_JAVASCRIPT_KEY 필요</h3></body></html>")
+        return HTMLResponse("""
+        <html>
+        <head><meta charset="utf-8"/></head>
+        <body style="margin:0;padding:20px;font-family:system-ui;">
+          <h3 style="color:#b91c1c;">⚠️ KAKAO_JAVASCRIPT_KEY 필요</h3>
+          <p>Render 환경변수에 KAKAO_JAVASCRIPT_KEY를 설정해야 지도가 표시됩니다.</p>
+        </body>
+        </html>
+        """)
     
     points = map_points_payload()
-    center_lat, center_lng = (36.0190, 129.3435)
+    
+    # 중심점 계산
+    if points:
+        center_lat = sum(p["lat"] for p in points) / len(points)
+        center_lng = sum(p["lng"] for p in points) / len(points)
+    else:
+        center_lat, center_lng = 36.0190, 129.3435
     
     html = f"""
 <!doctype html>
@@ -783,35 +797,68 @@ def kakao_map():
 <style>
   html,body{{margin:0;height:100%;}}
   #map{{width:100%;height:100%;}}
+  .custom-info{{
+    padding:12px;
+    font-family:system-ui;
+    font-size:13px;
+    line-height:1.5;
+    min-width:200px;
+  }}
+  .info-title{{font-weight:900;margin-bottom:6px;font-size:14px;}}
+  .info-text{{color:#6B7280;margin:2px 0;}}
 </style>
-<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
+<script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
 </head>
 <body>
 <div id="map"></div>
 <script>
-  const center = new kakao.maps.LatLng({center_lat}, {center_lng});
-  const map = new kakao.maps.Map(document.getElementById('map'), {{
-    center: center,
+  const container = document.getElementById('map');
+  const options = {{
+    center: new kakao.maps.LatLng({center_lat}, {center_lng}),
     level: 6
-  }});
-
+  }};
+  
+  const map = new kakao.maps.Map(container, options);
   const points = {json.dumps(points, ensure_ascii=False)};
 
-  if (points.length > 0) {{
+  if (points.length === 0) {{
+    // 기본 마커만 표시
+    const marker = new kakao.maps.Marker({{
+      position: new kakao.maps.LatLng({center_lat}, {center_lng})
+    }});
+    marker.setMap(map);
+  }} else {{
     const bounds = new kakao.maps.LatLngBounds();
+    
     points.forEach(p => {{
       const pos = new kakao.maps.LatLng(p.lat, p.lng);
       bounds.extend(pos);
 
-      const marker = new kakao.maps.Marker({{ position: pos }});
-      marker.setMap(map);
+      const marker = new kakao.maps.Marker({{
+        position: pos,
+        map: map
+      }});
 
-      const content = `<div style="padding:10px;"><strong>${{p.title}}</strong><br/>${{p.period}}<br/>${{p.addr}}</div>`;
-      const infowindow = new kakao.maps.InfoWindow({{ content: content }});
+      const detailText = p.detail ? `<div class="info-text">상세: ${{p.detail}}</div>` : '';
+      const content = `
+        <div class="custom-info">
+          <div class="info-title">${{p.title}}</div>
+          <div class="info-text">${{p.period}}</div>
+          <div class="info-text">${{p.addr}}</div>
+          ${{detailText}}
+          <div class="info-text" style="margin-top:6px;font-size:11px;color:#9CA3AF;">ID: ${{p.id}}</div>
+        </div>
+      `;
+      
+      const infowindow = new kakao.maps.InfoWindow({{
+        content: content
+      }});
+
       kakao.maps.event.addListener(marker, 'click', function() {{
         infowindow.open(map, marker);
       }});
     }});
+    
     map.setBounds(bounds);
   }}
 </script>
