@@ -1,14 +1,15 @@
 # =========================================================
-# OSEYO — FINAL STABLE (Gradio 4.44+ / Render)
-# 요청사항 전부 반영:
-# 1) + 플로팅 버튼이 완료 버튼/푸터를 가리면 안 됨  -> 모달 열리면 FAB 숨김, 닫으면 다시 표시
-# 2) DateTime: 캘린더 + 시/분 선택 가능해야 함       -> flatpickr z-index fix + showPicker 보강
-# 3) 선택했는데도 "일시 선택" 오류로 생성 안 됨       -> normalize_dt 초강력 파서(여러 입력형태 흡수)
-# 4) 지도 안 나옴                                   -> data: iframe 대신 FastAPI가 /kakao_map HTML 직접 서빙
-# 5) 즐겨찾는 활동 추가 버튼 복구                     -> 활동 입력 옆 +즐겨찾기, 드롭다운 선택 시 입력 자동 채움
+# OSEYO — HARD FIX (Gradio 4.44+ / Render)
+# Fix:
+# - DateTime picker 안 뜸: flatpickr position:fixed + z-index + transform 방지
+# - 선택했는데도 "일시 선택" 뜸/등록 안됨: normalize_dt() Z/ms/dict/list/timestamp 전부 처리
+# - 모달 가로 스크롤 제거: box-sizing/max-width/overflow-x 강제 + row wrap 정리
+# - + 버튼이 완료 가림: 모달 열리면 FAB 숨김
+# - 지도: data: iframe 차단 대비 -> FastAPI가 /kakao_map HTML 직접 서빙
+# - 즐겨찾기 활동: 추가/선택 가능, DB 저장
 # =========================================================
 
-import os, uuid, base64, io, sqlite3, json
+import os, uuid, base64, io, sqlite3, json, traceback
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -29,22 +30,39 @@ KAKAO_JAVASCRIPT_KEY = os.getenv("KAKAO_JAVASCRIPT_KEY", "").strip()
 def now_kst():
     return datetime.now(KST)
 
+def _clean_iso(s: str) -> str:
+    """
+    다양한 ISO/날짜 문자열을 fromisoformat에 맞게 정리
+    - 공백 -> T
+    - ...Z -> ...+00:00
+    - 밀리초 포함 + Z 처리
+    """
+    s = (s or "").strip()
+    if not s:
+        return ""
+    s = s.replace(" ", "T")
+    # Z(UTC) 처리
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return s
+
 def normalize_dt(v):
     """
-    gr.DateTime 값이 환경마다 형태가 다르다.
+    gr.DateTime 값이 환경/브라우저/버전에 따라 형태가 다름.
     - datetime
-    - "2026-01-05 15:40:00" (공백)
-    - "2026-01-05T15:40:00" (T)
-    - {"value": "..."} 같은 dict
-    - [..] 같은 list/tuple
-    - timestamp(ms/s)
-    전부 최대한 흡수해서 datetime(KST)로 만든다.
+    - "2026-01-05 15:40:00"
+    - "2026-01-05T15:40:00"
+    - "2026-01-05T06:40:00.000Z" 같은 Z 포함
+    - {"value": "..."} dict
+    - [..] list/tuple
+    - epoch timestamp (ms/s)
+    전부 datetime(KST)로 변환.
     """
     if v is None:
         return None
 
     if isinstance(v, dict):
-        v = v.get("value") or v.get("data") or v.get("datetime") or v.get("date") or None
+        v = v.get("value") or v.get("data") or v.get("datetime") or v.get("date") or v.get("time") or None
         if v is None:
             return None
 
@@ -56,17 +74,6 @@ def normalize_dt(v):
     if isinstance(v, datetime):
         return v if v.tzinfo else v.replace(tzinfo=KST)
 
-    if isinstance(v, str):
-        s = v.strip()
-        if not s:
-            return None
-        s = s.replace(" ", "T")
-        try:
-            dt = datetime.fromisoformat(s)
-            return dt if dt.tzinfo else dt.replace(tzinfo=KST)
-        except:
-            return None
-
     if isinstance(v, (int, float)):
         try:
             if v > 1e12:  # ms
@@ -75,12 +82,49 @@ def normalize_dt(v):
         except:
             return None
 
+    if isinstance(v, str):
+        s = _clean_iso(v)
+        if not s:
+            return None
+        # 밀리초가 너무 길게 붙어 fromisoformat 실패하는 경우 대비
+        # 예: 2026-01-05T06:40:00.000000+00:00 -> OK
+        # 예외 나면 밀리초 부분을 잘라 재시도
+        try:
+            dt = datetime.fromisoformat(s)
+        except:
+            try:
+                # . 이후 밀리초 부분을 6자리까지만
+                if "." in s:
+                    head, tail = s.split(".", 1)
+                    # tail에 timezone이 섞여 있을 수 있음
+                    tz = ""
+                    frac = tail
+                    if "+" in tail:
+                        frac, tz = tail.split("+", 1)
+                        tz = "+" + tz
+                    elif "-" in tail[1:]:
+                        # timezone negative (주의: 날짜 '-'랑 구분 위해 tail[1:])
+                        parts = tail.split("-", 1)
+                        frac = parts[0]
+                        tz = "-" + parts[1]
+                    frac = "".join([c for c in frac if c.isdigit()])[:6]
+                    s2 = head + "." + (frac if frac else "0") + tz
+                    dt = datetime.fromisoformat(s2)
+                else:
+                    return None
+            except:
+                return None
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=KST)
+        return dt.astimezone(KST)
+
     return None
 
 def fmt_period(st_iso: str, en_iso: str) -> str:
     try:
-        st = datetime.fromisoformat((st_iso or "").replace(" ", "T"))
-        en = datetime.fromisoformat((en_iso or "").replace(" ", "T"))
+        st = datetime.fromisoformat(_clean_iso(st_iso))
+        en = datetime.fromisoformat(_clean_iso(en_iso))
         if st.tzinfo is None: st = st.replace(tzinfo=KST)
         if en.tzinfo is None: en = en.replace(tzinfo=KST)
         st = st.astimezone(KST); en = en.astimezone(KST)
@@ -104,7 +148,6 @@ def image_np_to_b64(img_np):
 def b64_to_data_uri(b64_str):
     return f"data:image/jpeg;base64,{b64_str}" if b64_str else ""
 
-
 # -------------------------
 # DB
 # -------------------------
@@ -118,7 +161,7 @@ DB_PATH = os.path.join(DATA_DIR, "oseyo.db")
 def db_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
-def db_init_and_migrate():
+def db_init():
     with db_conn() as con:
         con.execute("""
         CREATE TABLE IF NOT EXISTS spaces (
@@ -145,7 +188,7 @@ def db_init_and_migrate():
         """)
         con.commit()
 
-db_init_and_migrate()
+db_init()
 
 def db_insert_space(space: dict):
     with db_conn() as con:
@@ -215,8 +258,8 @@ def active_spaces(spaces):
         if s.get("lat") is None or s.get("lng") is None:
             continue
         try:
-            st = datetime.fromisoformat((s["start_iso"] or "").replace(" ", "T"))
-            en = datetime.fromisoformat((s["end_iso"] or "").replace(" ", "T"))
+            st = datetime.fromisoformat(_clean_iso(s["start_iso"]))
+            en = datetime.fromisoformat(_clean_iso(s["end_iso"]))
             if st.tzinfo is None: st = st.replace(tzinfo=KST)
             if en.tzinfo is None: en = en.replace(tzinfo=KST)
             st = st.astimezone(KST); en = en.astimezone(KST)
@@ -226,7 +269,6 @@ def active_spaces(spaces):
             pass
     return out
 
-# favorites
 def db_list_favorites():
     with db_conn() as con:
         rows = con.execute("SELECT activity FROM favorites ORDER BY created_at DESC").fetchall()
@@ -239,7 +281,6 @@ def db_add_favorite(activity: str):
     with db_conn() as con:
         con.execute("INSERT OR IGNORE INTO favorites(activity, created_at) VALUES (?,?)", (a, now_kst().isoformat()))
         con.commit()
-
 
 # -------------------------
 # Kakao keyword search (REST)
@@ -285,9 +326,8 @@ def kakao_keyword_search(q: str, size=15):
         return [], "⚠️ 검색 결과가 없다."
     return cands, ""
 
-
 # -------------------------
-# Home cards
+# Home
 # -------------------------
 def render_home():
     spaces = db_list_spaces()
@@ -337,9 +377,8 @@ def render_home():
 
     return "\n".join(out)
 
-
 # -------------------------
-# 지도: FastAPI에서 HTML 직접 서빙
+# Map: served by FastAPI
 # -------------------------
 def map_points_payload():
     spaces = db_list_spaces()
@@ -365,7 +404,6 @@ def draw_map():
     </div>
     """
 
-
 # -------------------------
 # Modal control
 # -------------------------
@@ -387,14 +425,14 @@ def open_modal():
 
 def close_modal():
     return (
-        gr.update(visible=False),   # overlay
-        gr.update(visible=False),   # sheet
-        gr.update(visible=False),   # footer
-        gr.update(visible=True),    # main_view
-        gr.update(visible=False),   # addr_view
-        "",                         # msg_main
-        "",                         # msg_addr
-        gr.update(visible=True),    # fab show
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=True),
+        gr.update(visible=False),
+        "",
+        "",
+        gr.update(visible=True),
     )
 
 def goto_addr():
@@ -413,7 +451,6 @@ def back_to_main():
         gr.update(visible=False),
         "",
     )
-
 
 # -------------------------
 # Address flow
@@ -455,9 +492,8 @@ def show_chosen_place(addr_confirmed, addr_detail):
         return f"**선택된 장소:** {addr_confirmed}\n\n상세: {addr_detail}"
     return f"**선택된 장소:** {addr_confirmed}"
 
-
 # -------------------------
-# Favorites handlers
+# Favorites
 # -------------------------
 def load_favs():
     return gr.update(choices=db_list_favorites(), value=None)
@@ -471,7 +507,6 @@ def add_fav_from_activity(activity_text):
 
 def pick_fav_to_activity(fav_value):
     return fav_value or ""
-
 
 # -------------------------
 # Create event
@@ -487,8 +522,12 @@ def create_event(activity_text, start_dt_val, end_dt_val, capacity_unlimited, ca
 
     st = normalize_dt(start_dt_val)
     en = normalize_dt(end_dt_val)
+
     if st is None or en is None:
-        return "⚠️ 시작/종료 일시를 선택해 달라.", render_home(), draw_map()
+        # 원인 파악용(너한테 보이게) - 너무 길게는 안 띄움
+        raw_s = str(start_dt_val)[:80]
+        raw_e = str(end_dt_val)[:80]
+        return f"⚠️ 시작/종료 일시를 선택해 달라.\n(디버그: start={raw_s} / end={raw_e})", render_home(), draw_map()
 
     st = st.astimezone(KST); en = en.astimezone(KST)
     if en <= st:
@@ -508,29 +547,34 @@ def create_event(activity_text, start_dt_val, end_dt_val, capacity_unlimited, ca
 
     title = act if len(act) <= 24 else act[:24] + "…"
 
-    db_insert_space({
-        "id": new_id,
-        "title": title,
-        "photo_b64": photo_b64,
-        "start_iso": st.isoformat(),
-        "end_iso": en.isoformat(),
-        "address_confirmed": addr_confirmed,
-        "address_detail": (addr_detail or "").strip(),
-        "lat": float(addr_lat),
-        "lng": float(addr_lng),
-        "capacityEnabled": capacityEnabled,
-        "capacityMax": cap_max_val,
-        "hidden": False,
-    })
+    try:
+        db_insert_space({
+            "id": new_id,
+            "title": title,
+            "photo_b64": photo_b64,
+            "start_iso": st.isoformat(),
+            "end_iso": en.isoformat(),
+            "address_confirmed": addr_confirmed,
+            "address_detail": (addr_detail or "").strip(),
+            "lat": float(addr_lat),
+            "lng": float(addr_lng),
+            "capacityEnabled": capacityEnabled,
+            "capacityMax": cap_max_val,
+            "hidden": False,
+        })
+    except Exception:
+        err = traceback.format_exc().splitlines()[-1]
+        return f"⚠️ DB 저장 실패: {err}", render_home(), draw_map()
 
     return f"✅ 등록 완료: '{title}'", render_home(), draw_map()
 
-
 # -------------------------
-# CSS (DateTime picker z-index fix 포함)
+# CSS (가로스크롤 제거 + DateTime picker 강제 표시)
 # -------------------------
 CSS = r"""
 :root { --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --card:#ffffffcc; --danger:#ef4444; }
+
+* { box-sizing: border-box !important; }
 
 html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !important; }
 .gradio-container { background:var(--bg) !important; width:100% !important; overflow-x:hidden !important; }
@@ -571,11 +615,14 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 .mapWrap{ width:100vw; max-width:100vw; margin:0; padding:0; overflow:hidden; }
 .mapFrame{ width:100vw; height: calc(100vh - 220px); border:0; border-radius:0; }
 
-/* ✅ DateTime picker(flatpickr)가 모달 뒤로 숨는 문제 방지 */
+/* ✅ DateTime picker(flatpickr) 강제 표시 (모달/오버레이 위로) */
 .flatpickr-calendar,
 .flatpickr-time,
 .flatpickr-dropdown {
   z-index: 1000005 !important;
+}
+.flatpickr-calendar {
+  position: fixed !important; /* ✅ 이게 핵심 */
 }
 
 /* 모달 */
@@ -585,6 +632,8 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   background:rgba(0,0,0,0.35) !important;
   z-index:99990 !important;
 }
+
+/* ✅ 모달 가로스크롤 절대 금지 */
 .oseyo_sheet{
   position:fixed !important;
   left:50% !important; transform:translateX(-50%) !important;
@@ -592,7 +641,7 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   width:min(420px,96vw) !important;
   height:88vh !important;
   overflow-y:auto !important;
-  overflow-x:hidden !important;
+  overflow-x:hidden !important;  /* ✅ */
   background:var(--bg) !important;
   border:1px solid var(--line) !important; border-bottom:0 !important;
   border-radius:26px 26px 0 0 !important;
@@ -600,6 +649,11 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   z-index:99991 !important;
   box-shadow:0 -12px 40px rgba(0,0,0,0.25) !important;
 }
+
+.oseyo_sheet *{
+  max-width:100% !important;     /* ✅ */
+}
+
 .oseyo_footer{
   position:fixed !important;
   left:50% !important; transform:translateX(-50%) !important;
@@ -611,12 +665,22 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
   z-index:99992 !important;
 }
 
+/* 입력들 */
 .oseyo_sheet input, .oseyo_sheet textarea, .oseyo_sheet select{
   width:100% !important;
   min-width:0 !important;
 }
 
-/* FAB: 레이아웃 자리(바) 생기는 문제 제거 */
+/* slider 같은 애들이 삐져나오는 것 방지 */
+.oseyo_sheet .wrap,
+.oseyo_sheet .gr-row,
+.oseyo_sheet .gr-form,
+.oseyo_sheet .gr-box{
+  max-width:100% !important;
+  overflow-x:hidden !important;
+}
+
+/* FAB: 레이아웃 자리(바) 제거 */
 .oseyo_fab_wrap{
   height:0 !important;
   overflow:visible !important;
@@ -641,41 +705,9 @@ html, body { width:100%; overflow-x:hidden !important; background:var(--bg) !imp
 """
 
 # -------------------------
-# JS 보강: 모달 열렸을 때 showPicker 가능하면 호출(브라우저 기본 피커)
-# * flatpickr가 정상으로 떠도 무해
-# -------------------------
-PICKER_FIX_HTML = r"""
-<script>
-(function(){
-  function tryFix(){
-    const sheet = document.querySelector('.oseyo_sheet');
-    if(!sheet) return;
-
-    // DateTime 입력은 대개 input[type="text"]로 렌더되고 값이 2026-..로 시작
-    const inputs = sheet.querySelectorAll('input');
-    inputs.forEach(inp=>{
-      const v = (inp.value || '').trim();
-      if(/^\\d{4}-\\d{2}-\\d{2}/.test(v)){
-        try{
-          // 일부 브라우저에서만 지원
-          inp.step = 60;
-          inp.addEventListener('focus', ()=>{ if(inp.showPicker) inp.showPicker(); });
-          inp.addEventListener('click', ()=>{ if(inp.showPicker) inp.showPicker(); });
-        }catch(e){}
-      }
-    });
-  }
-  window.addEventListener('load', ()=>setTimeout(tryFix, 800));
-  document.addEventListener('click', ()=>setTimeout(tryFix, 200));
-})();
-</script>
-"""
-
-# -------------------------
 # UI
 # -------------------------
 with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
-    # states
     addr_confirmed = gr.State("")
     addr_detail = gr.State("")
     addr_lat = gr.State(None)
@@ -683,7 +715,6 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     addr_candidates = gr.State([])
 
     gr.Markdown("## 지금, 열려 있습니다\n원하시면 오세요")
-    gr.HTML(PICKER_FIX_HTML)
 
     with gr.Tabs():
         with gr.Tab("탐색"):
@@ -693,7 +724,6 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
             map_html = gr.HTML()
             map_refresh = gr.Button("지도 새로고침")
 
-    # FAB (wrap으로 자리 차지 제거)
     with gr.Row(elem_classes=["oseyo_fab_wrap"]):
         fab = gr.Button("+", elem_classes=["oseyo_fab"])
 
@@ -742,7 +772,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         btn_done = gr.Button("완료")
         btn_addr_confirm = gr.Button("주소 선택 완료")
 
-    # loads
+    # load
     demo.load(fn=render_home, inputs=None, outputs=home_html)
     demo.load(fn=draw_map, inputs=None, outputs=map_html)
     demo.load(fn=load_favs, inputs=None, outputs=fav_dropdown)
@@ -750,7 +780,7 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
     refresh_btn.click(fn=render_home, inputs=None, outputs=home_html)
     map_refresh.click(fn=draw_map, inputs=None, outputs=map_html)
 
-    # modal open/close (FAB hide/show)
+    # open/close modal (+ 숨김)
     fab.click(
         fn=open_modal,
         inputs=None,
@@ -805,11 +835,10 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
         outputs=[activity_text],
     )
 
-    # create + close if success
+    # create then close on success
     def create_then_close(*args):
         msg, home, mapv = create_event(*args)
         if isinstance(msg, str) and msg.startswith("✅"):
-            # 성공: 닫기 + FAB 보이기 + 즐겨찾기 목록 갱신
             return (
                 msg, home, mapv,
                 gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
@@ -818,7 +847,6 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
                 gr.update(visible=True),
                 load_favs(),
             )
-        # 실패: 모달 유지
         return (
             msg, home, mapv,
             gr.update(visible=True), gr.update(visible=True), gr.update(visible=True),
@@ -837,7 +865,6 @@ with gr.Blocks(css=CSS, title="Oseyo (DB)") as demo:
                  fab,
                  fav_dropdown],
     )
-
 
 # -------------------------
 # FastAPI
