@@ -9,6 +9,8 @@ import gradio as gr
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+
+# -*- coding: utf-8 -*-
 # =====================
 # 기본 설정
 # =====================
@@ -385,6 +387,9 @@ def create_event(activity_text, start_txt, end_txt, capacity_unlimited, cap_max,
 # =====================
 # ✅ CSS: 가로스크롤/눌림/가림 방지 최적화
 # =====================
+# =====================
+# CSS: 가로스크롤 방지 및 레이아웃 최적화 (이모지 제거됨)
+# =====================
 CSS = """
 :root{--bg:#FAF9F6;--ink:#1F2937;--muted:#6B7280;--line:#E5E3DD;--card:#ffffffcc;--danger:#ef4444;}
 
@@ -411,22 +416,22 @@ html, body {
     backdrop-filter: blur(4px) !important;
 }
 
-/* ✅ 모달 시트: 세로 스크롤만 허용, 가로 스크롤 원천 봉쇄 */
+/* 모달 시트: 세로 스크롤만 허용, 가로 스크롤 원천 봉쇄 */
 .modal-sheet {
     position: fixed !important;
     left: 50% !important;
     top: 50% !important;
     transform: translate(-50%, -50%) !important;
     width: min(520px, 94vw) !important;
-    max-height: 90vh !important;
+    max-height: 88vh !important;
     background: #fff !important;
     border-radius: 24px !important;
-    padding: 0 !important; /* 패딩을 내부 컨테이너로 위임 */
+    padding: 0 !important;
     z-index: 10001 !important;
     box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25) !important;
     display: flex !important;
     flex-direction: column !important;
-    overflow: hidden !important; /* 내부에서 스크롤 처리 */
+    overflow: hidden !important;
 }
 
 /* 모달 내부 스크롤 영역 */
@@ -440,18 +445,13 @@ html, body {
     flex: 1;
 }
 
-/* ✅ 모든 행(Row) 요소 가로 배치 강제 해제 (가로 삐져나옴 방지) */
+/* 모든 행 요소 가로 배치 해제 (가로 삐져나옴 방지) */
 .modal-sheet .gr-row, 
 .modal-sheet .row {
     display: flex !important;
-    flex-direction: column !important; /* 모바일/좁은화면 대응을 위해 기본 수직 배치 */
+    flex-direction: column !important;
     width: 100% !important;
     gap: 12px !important;
-}
-
-/* 가로로 나란히 있어야 할 버튼/슬라이더 등만 예외 처리 */
-@media (min-width: 400px) {
-    .modal-sheet .modal-footer { flex-direction: row !important; }
 }
 
 /* 즐겨찾기 그리드 (2열 유지) */
@@ -466,6 +466,7 @@ html, body {
 .modal-sheet .gradio-image {
     width: 100% !important;
     min-height: 180px !important;
+    overflow: hidden !important;
 }
 .modal-sheet .gradio-image img {
     object-fit: cover !important;
@@ -485,106 +486,20 @@ html, body {
     border-top: 1px solid var(--line) !important;
     display: flex !important;
     gap: 10px !important;
+    flex-direction: row !important;
 }
 
-/* 불필요한 스크롤바 숨기기 */
-.modal-sheet::-webkit-scrollbar { width: 6px; }
-.modal-sheet::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 10px; }
-
-/* 기존 카드 스타일 유지 */
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px; margin: 12px auto; max-width: 760px; }
+/* 기존 카드 및 맵 스타일 */
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px; margin: 12px auto; max-width: 760px; position: relative; }
 .rowcard { display: flex; gap: 18px; justify-content: space-between; }
 .thumb { width: 120px; height: 120px; object-fit: cover; border-radius: 14px; flex-shrink: 0; }
+.mapFrame { width: 100%; height: 600px; border-radius: 18px; border: 1px solid var(--line); }
+
 @media (max-width: 600px) {
     .rowcard { flex-direction: column-reverse; }
     .thumb { width: 100%; height: 180px; }
 }
 """
-/* =========================
-   ✅ 모달: 스크롤은 모달만!
-   ========================= */
-.modal-sheet{
-  overflow-y:auto!important;
-  overflow-x:hidden!important;
-}
-
-/* ✅ 모달 내부 컴포넌트들이 "자체 스크롤" 만들지 못하게 전부 풀어버림 */
-.modal-sheet .gr-block,
-.modal-sheet .gr-row,
-.modal-sheet .gr-form,
-.modal-sheet .wrap,
-.modal-sheet .contain,
-.modal-sheet .container,
-.modal-sheet .padded,
-.modal-sheet .form,
-.modal-sheet .panel,
-.modal-sheet .scroll-hide{
-  overflow:visible!important;
-  max-height:none!important;
-}
-
-/* ✅ 드롭다운/라디오/체크박스: 옵션 영역 자체 스크롤 금지 */
-.modal-sheet .gradio-dropdown,
-.modal-sheet .gradio-dropdown .wrap,
-.modal-sheet .gradio-dropdown .options,
-.modal-sheet .gradio-dropdown .options ul,
-.modal-sheet .gradio-radio,
-.modal-sheet .gradio-radio .wrap,
-.modal-sheet .gradio-radio fieldset,
-.modal-sheet .gradio-checkbox,
-.modal-sheet .gradio-checkbox .wrap,
-.modal-sheet .gradio-checkbox fieldset{
-  overflow:visible!important;
-  max-height:none!important;
-}
-
-/* ✅ 이미지 업로드 영역: 내부 스크롤 금지 + 높이 보장 */
-.modal-sheet .gradio-image,
-.modal-sheet .gradio-image .wrap,
-.modal-sheet .gradio-image .container,
-.modal-sheet .gradio-image .image-container,
-.modal-sheet .gradio-image .upload-container{
-  overflow:visible!important;
-  max-height:none!important;
-  min-height:170px!important;
-}
-
-/* ✅ 슬라이더/넘버 인풋 오른쪽에 스크롤 생기는 케이스 방지 */
-.modal-sheet .gradio-slider,
-.modal-sheet .gradio-slider .wrap,
-.modal-sheet .gradio-number,
-.modal-sheet .gradio-number .wrap{
-  overflow:visible!important;
-  max-height:none!important;
-}
-
-/* ✅ 혹시 남는 스크롤바(webkit) 강제 제거: 모달 내부는 숨김 */
-.modal-sheet *::-webkit-scrollbar{
-  width:0!important;
-  height:0!important;
-}}
-"""
-
-# ✅ 캘린더(클릭) 살리기: textbox input을 datetime-local로 강제
-JS_BOOT = """
-function apply(){
-  const a = document.getElementById("start_dt_box");
-  const b = document.getElementById("end_dt_box");
-  if(a){
-    const i=a.querySelector("input");
-    if(i){ i.type="datetime-local"; i.step="60"; i.style.width="100%"; }
-  }
-  if(b){
-    const i=b.querySelector("input");
-    if(i){ i.type="datetime-local"; i.step="60"; i.style.width="100%"; }
-  }
-}
-apply();
-setTimeout(apply, 250);
-setTimeout(apply, 900);
-setTimeout(apply, 1800);
-"""
-
 # =====================
 # UI
 # =====================
@@ -841,5 +756,6 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "7860"))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
