@@ -244,7 +244,7 @@ def parse_dt_any(v):
     s = s.replace("/", "-")
     if " " in s and "T" not in s:
         s = s.replace(" ", "T")
-    if len(s) == 16:  # YYYY-MM-DDTHH:MM
+    if len(s) == 16:
         s = s + ":00"
     try:
         dt = datetime.fromisoformat(s)
@@ -261,6 +261,7 @@ def parse_dt_any(v):
 # =====================
 def render_home():
     items = active_spaces()
+
     persistent = os.path.isdir("/var/data")
     banner = (
         f"<div class='banner ok'>✅ 영구저장 모드</div>"
@@ -379,19 +380,19 @@ def create_event(activity_text, start_txt, end_txt, capacity_unlimited, cap_max,
         return f"⚠️ 저장 실패: {str(e)}", render_home(), draw_map()
 
 # =====================
-# ✅ CSS (핵심: footer를 sticky로 바꿔서 "가림" 제거)
+# ✅ CSS: 가로스크롤/눌림/가림 전부 차단
 # =====================
 CSS = """
 :root{--bg:#FAF9F6;--ink:#1F2937;--muted:#6B7280;--line:#E5E3DD;--card:#ffffffcc;--danger:#ef4444;}
 *{box-sizing:border-box!important;}
 html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;margin:0;padding:0;}
-.gradio-container{background:var(--bg)!important;max-width:none!important;width:100vw!important;margin:0!important;padding:0 16px 120px!important;}
-.gradio-container .wrap, .gradio-container .contain{max-width:none!important;width:100%!important;}
+.gradio-container{background:var(--bg)!important;max-width:none!important;width:100vw!important;margin:0!important;padding:0 16px 120px!important;overflow-x:hidden!important;}
+.gradio-container .wrap, .gradio-container .contain{max-width:none!important;width:100%!important;overflow-x:hidden!important;}
 
+/* 카드 */
 .banner{margin:10px auto 6px;padding:10px 12px;border-radius:14px;font-size:13px;}
 .banner.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;}
 .banner.warn{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;}
-
 .card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;margin:12px auto;max-width:760px;}
 .card.empty{text-align:center;padding:40px;}
 .h{font-size:18px;font-weight:900;margin-bottom:8px;}
@@ -408,7 +409,7 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 .mapWrap{width:100%;margin:0;padding:0;}
 .mapFrame{width:100%;height:650px;border:0;border-radius:18px;max-width:980px;display:block;margin:0 auto;}
 
-/* ✅ FAB */
+/* FAB */
 #fab-btn{position:fixed!important;right:20px!important;bottom:20px!important;z-index:20000!important;width:50px!important;height:50px!important;padding:0!important;}
 #fab-btn button{
   width:50px!important;height:50px!important;min-width:50px!important;min-height:50px!important;border-radius:50%!important;padding:0!important;
@@ -418,10 +419,10 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 }
 #fab-btn button:hover{transform:scale(1.05)!important;}
 
-/* ✅ overlay */
+/* overlay */
 .modal-overlay{position:fixed!important;inset:0!important;background:rgba(0,0,0,0.5)!important;z-index:10000!important;backdrop-filter:blur(3px)!important;}
 
-/* ✅ 모달 본문 스크롤 1개 */
+/* ✅ 모달: "세로 스크롤만" */
 .modal-sheet{
   position:fixed!important;left:50%!important;top:50%!important;transform:translate(-50%,-50%)!important;
   width:min(520px,92vw)!important;max-height:88vh!important;
@@ -429,6 +430,33 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
   background:#fff!important;border:1px solid var(--line)!important;border-radius:20px!important;
   padding:16px!important;
   z-index:10001!important;box-shadow:0 20px 40px rgba(0,0,0,0.15)!important;
+}
+
+/* ✅ 모달 내부 모든 요소 가로폭 강제/가로스크롤 차단 */
+.modal-sheet *{max-width:100%!important;overflow-x:hidden!important;}
+.modal-sheet .gr-row{flex-wrap:wrap!important;gap:10px!important;}
+.modal-sheet .gr-form, .modal-sheet .form, .modal-sheet .wrap, .modal-sheet .contain{width:100%!important;max-width:100%!important;}
+
+/* input/textarea/select 가로 스크롤 방지 */
+.modal-sheet input, .modal-sheet textarea, .modal-sheet select{
+  width:100%!important;max-width:100%!important;
+  overflow:hidden!important;text-overflow:ellipsis!important;
+}
+
+/* ✅ 사진 컴포넌트 눌림 방지 (핵심) */
+.modal-sheet .gradio-image,
+.modal-sheet .gradio-image .wrap,
+.modal-sheet .gradio-image .container,
+.modal-sheet .gradio-image .image-container,
+.modal-sheet .gradio-image .upload-container{
+  width:100%!important;
+  min-height:170px!important;
+}
+.modal-sheet .gradio-image img{
+  width:100%!important;
+  max-height:170px!important;
+  object-fit:cover!important;
+  border-radius:14px!important;
 }
 
 /* 헤더 */
@@ -439,13 +467,11 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 .fav-grid{display:grid!important;grid-template-columns:1fr 1fr!important;gap:8px!important;margin:8px 0 12px!important;}
 .fav-chip button{width:100%!important;border-radius:12px!important;padding:10px 12px!important;font-weight:900!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;}
 
-/* ✅ 여기 핵심: footer를 fixed -> sticky */
+/* footer sticky */
 .modal-footer{
-  position:sticky!important;
-  bottom:0!important;
+  position:sticky!important;bottom:0!important;
   margin-top:14px!important;
-  display:flex!important;
-  gap:10px!important;
+  display:flex!important;gap:10px!important;
   padding:12px!important;
   background:#fff!important;
   border-top:2px solid var(--line)!important;
@@ -461,23 +487,24 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 }
 """
 
-# ✅ 캘린더(클릭) 살리기: textbox input을 datetime-local로
+# ✅ 캘린더(클릭) 살리기: textbox input을 datetime-local로 강제
 JS_BOOT = """
 function apply(){
   const a = document.getElementById("start_dt_box");
   const b = document.getElementById("end_dt_box");
   if(a){
     const i=a.querySelector("input");
-    if(i){ i.type="datetime-local"; i.step="60"; }
+    if(i){ i.type="datetime-local"; i.step="60"; i.style.width="100%"; }
   }
   if(b){
     const i=b.querySelector("input");
-    if(i){ i.type="datetime-local"; i.step="60"; }
+    if(i){ i.type="datetime-local"; i.step="60"; i.style.width="100%"; }
   }
 }
 apply();
-setTimeout(apply, 300);
-setTimeout(apply, 1200);
+setTimeout(apply, 250);
+setTimeout(apply, 900);
+setTimeout(apply, 1800);
 """
 
 # =====================
@@ -516,8 +543,7 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
         with gr.Column(elem_classes=["fav-grid"]):
             fav_buttons = [gr.Button("", visible=False, elem_classes=["fav-chip"]) for _ in range(10)]
 
-        # ✅ 안 가리게: 사진/일시 영역을 "반드시" 넣음
-        photo_np = gr.Image(label="📸 사진", type="numpy", height=160)
+        photo_np = gr.Image(label="📸 사진", type="numpy", height=170)
 
         start_txt = gr.Textbox(label="📅 시작 일시", elem_id="start_dt_box", placeholder="YYYY-MM-DDTHH:MM")
         end_txt   = gr.Textbox(label="⏰ 종료 일시", elem_id="end_dt_box", placeholder="YYYY-MM-DDTHH:MM")
@@ -535,7 +561,6 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
 
         msg_output = gr.Markdown("")
 
-        # ✅ sticky footer (가림 제거)
         with gr.Row(elem_classes=["modal-footer"]):
             cancel_btn = gr.Button("취소", variant="secondary")
             create_btn = gr.Button("✅ 생성", variant="primary")
@@ -624,6 +649,7 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
             if c["label"] == label:
                 selected_json = json.dumps(c, ensure_ascii=False)
                 msg = f"✅ '{c['place']}' 선택됨"
+                # ✅ 선택하면 라디오 숨기고, 텍스트박스에 고정(라벨 표시)
                 return selected_json, msg, gr.update(visible=False), gr.update(value=label)
         return "{}", "", gr.update(visible=True), gr.update()
 
