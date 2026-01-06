@@ -433,7 +433,6 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 }
 
 /* ✅ 모달 내부 모든 요소 가로폭 강제/가로스크롤 차단 */
-.modal-sheet *{max-width:100%!important;overflow-x:hidden!important;}
 .modal-sheet .gr-row{flex-wrap:wrap!important;gap:10px!important;}
 .modal-sheet .gr-form, .modal-sheet .form, .modal-sheet .wrap, .modal-sheet .contain{width:100%!important;max-width:100%!important;}
 
@@ -484,7 +483,70 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
   .rowcard{grid-template-columns:1fr;padding-right:14px;}
   .thumb{height:200px;}
   .modal-sheet{width:94vw!important;max-height:90vh!important;}
+
+/* =========================
+   ✅ 모달: 스크롤은 모달만!
+   ========================= */
+.modal-sheet{
+  overflow-y:auto!important;
+  overflow-x:hidden!important;
 }
+
+/* ✅ 모달 내부 컴포넌트들이 "자체 스크롤" 만들지 못하게 전부 풀어버림 */
+.modal-sheet .gr-block,
+.modal-sheet .gr-row,
+.modal-sheet .gr-form,
+.modal-sheet .wrap,
+.modal-sheet .contain,
+.modal-sheet .container,
+.modal-sheet .padded,
+.modal-sheet .form,
+.modal-sheet .panel,
+.modal-sheet .scroll-hide{
+  overflow:visible!important;
+  max-height:none!important;
+}
+
+/* ✅ 드롭다운/라디오/체크박스: 옵션 영역 자체 스크롤 금지 */
+.modal-sheet .gradio-dropdown,
+.modal-sheet .gradio-dropdown .wrap,
+.modal-sheet .gradio-dropdown .options,
+.modal-sheet .gradio-dropdown .options ul,
+.modal-sheet .gradio-radio,
+.modal-sheet .gradio-radio .wrap,
+.modal-sheet .gradio-radio fieldset,
+.modal-sheet .gradio-checkbox,
+.modal-sheet .gradio-checkbox .wrap,
+.modal-sheet .gradio-checkbox fieldset{
+  overflow:visible!important;
+  max-height:none!important;
+}
+
+/* ✅ 이미지 업로드 영역: 내부 스크롤 금지 + 높이 보장 */
+.modal-sheet .gradio-image,
+.modal-sheet .gradio-image .wrap,
+.modal-sheet .gradio-image .container,
+.modal-sheet .gradio-image .image-container,
+.modal-sheet .gradio-image .upload-container{
+  overflow:visible!important;
+  max-height:none!important;
+  min-height:170px!important;
+}
+
+/* ✅ 슬라이더/넘버 인풋 오른쪽에 스크롤 생기는 케이스 방지 */
+.modal-sheet .gradio-slider,
+.modal-sheet .gradio-slider .wrap,
+.modal-sheet .gradio-number,
+.modal-sheet .gradio-number .wrap{
+  overflow:visible!important;
+  max-height:none!important;
+}
+
+/* ✅ 혹시 남는 스크롤바(webkit) 강제 제거: 모달 내부는 숨김 */
+.modal-sheet *::-webkit-scrollbar{
+  width:0!important;
+  height:0!important;
+}}
 """
 
 # ✅ 캘린더(클릭) 살리기: textbox input을 datetime-local로 강제
@@ -763,3 +825,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "7860"))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
