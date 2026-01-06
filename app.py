@@ -233,7 +233,7 @@ def kakao_keyword_search(q: str, size=10):
     return cands, ""
 
 # =====================
-# 날짜/시간 파싱 (datetime-local + 키보드 입력 공용)
+# 날짜/시간 파싱
 # =====================
 def parse_dt_any(v):
     if v is None:
@@ -244,7 +244,7 @@ def parse_dt_any(v):
     s = s.replace("/", "-")
     if " " in s and "T" not in s:
         s = s.replace(" ", "T")
-    if len(s) == 16:
+    if len(s) == 16:  # YYYY-MM-DDTHH:MM
         s = s + ":00"
     try:
         dt = datetime.fromisoformat(s)
@@ -379,7 +379,7 @@ def create_event(activity_text, start_txt, end_txt, capacity_unlimited, cap_max,
         return f"⚠️ 저장 실패: {str(e)}", render_home(), draw_map()
 
 # =====================
-# CSS: ✅ FAB를 “Gradio 버튼” 그대로 fixed로 띄움 (JS 필요 없음)
+# ✅ CSS (핵심: footer를 sticky로 바꿔서 "가림" 제거)
 # =====================
 CSS = """
 :root{--bg:#FAF9F6;--ink:#1F2937;--muted:#6B7280;--line:#E5E3DD;--card:#ffffffcc;--danger:#ef4444;}
@@ -408,72 +408,60 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 .mapWrap{width:100%;margin:0;padding:0;}
 .mapFrame{width:100%;height:650px;border:0;border-radius:18px;max-width:980px;display:block;margin:0 auto;}
 
-/* ✅ 여기부터 FAB 핵심 */
-/* elem_id는 wrapper div에 걸림 → wrapper를 fixed로 띄움 */
-#fab-btn{
-  position:fixed !important;
-  right:20px !important;
-  bottom:20px !important;
-  z-index:20000 !important;
-  width:50px !important;
-  height:50px !important;
-  padding:0 !important;
-}
-/* 실제 버튼 스타일 */
+/* ✅ FAB */
+#fab-btn{position:fixed!important;right:20px!important;bottom:20px!important;z-index:20000!important;width:50px!important;height:50px!important;padding:0!important;}
 #fab-btn button{
-  width:50px !important;
-  height:50px !important;
-  min-width:50px !important;
-  min-height:50px !important;
-  border-radius:50% !important;
-  padding:0 !important;
-
-  border:3px solid #ef4444 !important;
-  background:#ffffff !important;
-  color:#111 !important;
-
-  font-size:34px !important;
-  font-weight:800 !important;
-  line-height:44px !important;
-
-  box-shadow:0 6px 16px rgba(0,0,0,0.22) !important;
+  width:50px!important;height:50px!important;min-width:50px!important;min-height:50px!important;border-radius:50%!important;padding:0!important;
+  border:3px solid #ef4444!important;background:#fff!important;color:#111!important;
+  font-size:34px!important;font-weight:900!important;line-height:44px!important;
+  box-shadow:0 6px 16px rgba(0,0,0,0.22)!important;
 }
-#fab-btn button:hover{transform:scale(1.05) !important;}
-/* ✅ FAB 끝 */
+#fab-btn button:hover{transform:scale(1.05)!important;}
 
+/* ✅ overlay */
 .modal-overlay{position:fixed!important;inset:0!important;background:rgba(0,0,0,0.5)!important;z-index:10000!important;backdrop-filter:blur(3px)!important;}
+
+/* ✅ 모달 본문 스크롤 1개 */
 .modal-sheet{
   position:fixed!important;left:50%!important;top:50%!important;transform:translate(-50%,-50%)!important;
   width:min(520px,92vw)!important;max-height:88vh!important;
   overflow-y:auto!important;overflow-x:hidden!important;
   background:#fff!important;border:1px solid var(--line)!important;border-radius:20px!important;
-  padding:18px 18px 200px 18px!important;
+  padding:16px!important;
   z-index:10001!important;box-shadow:0 20px 40px rgba(0,0,0,0.15)!important;
 }
+
+/* 헤더 */
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:10px;border-bottom:2px solid var(--line);}
 .modal-title{font-size:18px;font-weight:900;color:var(--ink);}
-.photo-box{height:160px!important;overflow:hidden!important;border-radius:14px!important;}
 
+/* 즐겨찾기 2x5 */
 .fav-grid{display:grid!important;grid-template-columns:1fr 1fr!important;gap:8px!important;margin:8px 0 12px!important;}
 .fav-chip button{width:100%!important;border-radius:12px!important;padding:10px 12px!important;font-weight:900!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;}
 
+/* ✅ 여기 핵심: footer를 fixed -> sticky */
 .modal-footer{
-  position:fixed!important;left:50%!important;bottom:0!important;transform:translateX(-50%)!important;
-  width:min(520px,92vw)!important;display:flex!important;gap:10px!important;
-  padding:14px 16px!important;background:white!important;border-top:2px solid var(--line)!important;
-  border-radius:0 0 20px 20px!important;z-index:10002!important;box-shadow:0 -4px 12px rgba(0,0,0,0.08)!important;
+  position:sticky!important;
+  bottom:0!important;
+  margin-top:14px!important;
+  display:flex!important;
+  gap:10px!important;
+  padding:12px!important;
+  background:#fff!important;
+  border-top:2px solid var(--line)!important;
+  z-index:10002!important;
+  border-radius:14px!important;
 }
 .modal-footer button{flex:1!important;padding:12px!important;border-radius:12px!important;font-weight:900!important;font-size:14px!important;}
 
 @media (max-width:768px){
   .rowcard{grid-template-columns:1fr;padding-right:14px;}
   .thumb{height:200px;}
-  .modal-sheet{width:94vw!important;max-height:90vh!important;padding:14px 14px 200px 14px!important;}
-  .modal-footer{width:94vw!important;}
+  .modal-sheet{width:94vw!important;max-height:90vh!important;}
 }
 """
 
-# JS: datetime-local 강제(캘린더 클릭)
+# ✅ 캘린더(클릭) 살리기: textbox input을 datetime-local로
 JS_BOOT = """
 function apply(){
   const a = document.getElementById("start_dt_box");
@@ -509,7 +497,6 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
             map_html = gr.HTML()
             map_refresh_btn = gr.Button("🔄 지도 새로고침", size="sm")
 
-    # ✅ FAB 버튼 (Render에서 무조건 보임)
     fab_btn = gr.Button("+", elem_id="fab-btn")
 
     modal_overlay = gr.HTML("<div></div>", visible=False, elem_classes=["modal-overlay"])
@@ -529,7 +516,8 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
         with gr.Column(elem_classes=["fav-grid"]):
             fav_buttons = [gr.Button("", visible=False, elem_classes=["fav-chip"]) for _ in range(10)]
 
-        photo_np = gr.Image(label="📸 사진", type="numpy", height=160, elem_classes=["photo-box"])
+        # ✅ 안 가리게: 사진/일시 영역을 "반드시" 넣음
+        photo_np = gr.Image(label="📸 사진", type="numpy", height=160)
 
         start_txt = gr.Textbox(label="📅 시작 일시", elem_id="start_dt_box", placeholder="YYYY-MM-DDTHH:MM")
         end_txt   = gr.Textbox(label="⏰ 종료 일시", elem_id="end_dt_box", placeholder="YYYY-MM-DDTHH:MM")
@@ -547,13 +535,14 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
 
         msg_output = gr.Markdown("")
 
+        # ✅ sticky footer (가림 제거)
         with gr.Row(elem_classes=["modal-footer"]):
             cancel_btn = gr.Button("취소", variant="secondary")
             create_btn = gr.Button("✅ 생성", variant="primary")
 
-    # 로드
     demo.load(fn=render_home, outputs=home_html, js=JS_BOOT)
     demo.load(fn=draw_map, outputs=map_html)
+
     refresh_btn.click(fn=render_home, outputs=home_html)
     map_refresh_btn.click(fn=draw_map, outputs=map_html)
 
@@ -625,7 +614,8 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
         labels = [c["label"] for c in cands]
         return (cands, gr.update(choices=labels, value=None, visible=True), f"✅ {len(cands)}개 검색됨", "{}")
 
-    search_btn.click(fn=search_and_store, inputs=[place_query], outputs=[search_results_state, place_results, search_msg, selected_place_state])
+    search_btn.click(fn=search_and_store, inputs=[place_query],
+                     outputs=[search_results_state, place_results, search_msg, selected_place_state])
 
     def update_selected(cands, label):
         if not label or not cands:
