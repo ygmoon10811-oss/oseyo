@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os, uuid, base64, io, sqlite3, json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -9,8 +10,6 @@ import gradio as gr
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-
-# -*- coding: utf-8 -*-
 # =====================
 # 기본 설정
 # =====================
@@ -234,9 +233,6 @@ def kakao_keyword_search(q: str, size=10):
         return [], "⚠️ 검색 결과가 없습니다"
     return cands, ""
 
-# =====================
-# 날짜/시간 파싱
-# =====================
 def parse_dt_any(v):
     if v is None:
         return None
@@ -259,16 +255,15 @@ def parse_dt_any(v):
     return dt
 
 # =====================
-# 홈/지도
+# 렌더링 함수
 # =====================
 def render_home():
     items = active_spaces()
-
     persistent = os.path.isdir("/var/data")
     banner = (
-        f"<div class='banner ok'>✅ 영구저장 모드</div>"
+        f"<div class='banner ok'>영구저장 모드</div>"
         if persistent else
-        f"<div class='banner warn'>⚠️ 임시저장 모드</div>"
+        f"<div class='banner warn'>임시저장 모드</div>"
     )
 
     if not items:
@@ -326,9 +321,6 @@ def draw_map():
     </div>
     """
 
-# =====================
-# 이벤트 생성
-# =====================
 def create_event(activity_text, start_txt, end_txt, capacity_unlimited, cap_max, photo_np, selected_place_json):
     act = (activity_text or "").strip()
     if not act:
@@ -382,126 +374,88 @@ def create_event(activity_text, start_txt, end_txt, capacity_unlimited, cap_max,
         return f"⚠️ 저장 실패: {str(e)}", render_home(), draw_map()
 
 # =====================
-# ✅ CSS: 가로스크롤/눌림/가림 전부 차단
-# =====================
-# =====================
-# ✅ CSS: 가로스크롤/눌림/가림 방지 최적화
-# =====================
-# =====================
-# CSS: 가로스크롤 방지 및 레이아웃 최적화 (이모지 제거됨)
+# CSS 및 JavaScript (가로 스크롤 방지 최적화)
 # =====================
 CSS = """
 :root{--bg:#FAF9F6;--ink:#1F2937;--muted:#6B7280;--line:#E5E3DD;--card:#ffffffcc;--danger:#ef4444;}
-
-/* 전체 레이아웃 강제 고정 */
 *{box-sizing:border-box!important;}
 html, body {
     width: 100%;
     overflow-x: hidden !important;
     margin: 0; padding: 0;
 }
-
-/* Gradio 컨테이너 가로폭 제한 */
 .gradio-container {
     max-width: 100vw !important;
     overflow-x: hidden !important;
 }
 
-/* 모달 오버레이 */
+/* 모달 및 카드 스타일 */
+.banner{margin:10px auto 6px;padding:10px 12px;border-radius:14px;font-size:13px;}
+.banner.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;}
+.banner.warn{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;}
+.card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;margin:12px auto;max-width:760px;}
+.rowcard{display:flex;gap:18px;justify-content:space-between;}
+.title{font-size:16px;font-weight:900;color:var(--ink);}
+.period{font-size:14px;font-weight:900;color:#111827;margin:2px 0 8px;}
+.muted{font-size:13px;color:var(--muted);line-height:1.55;}
+.thumb{width:120px;height:120px;object-fit:cover;border-radius:14px;flex-shrink:0;}
+.btn-del{position:absolute;right:14px;bottom:14px;background:var(--danger);color:#fff!important;font-weight:900;font-size:12px;padding:8px 12px;border-radius:10px;text-decoration:none;}
+
+/* 모달 레이아웃 (가로 스크롤 원천 차단) */
 .modal-overlay {
-    position: fixed !important;
-    inset: 0 !important;
-    background: rgba(0,0,0,0.6) !important;
-    z-index: 10000 !important;
+    position: fixed !important; inset: 0 !important;
+    background: rgba(0,0,0,0.6) !important; z-index: 10000 !important;
     backdrop-filter: blur(4px) !important;
 }
-
-/* 모달 시트: 세로 스크롤만 허용, 가로 스크롤 원천 봉쇄 */
 .modal-sheet {
-    position: fixed !important;
-    left: 50% !important;
-    top: 50% !important;
+    position: fixed !important; left: 50% !important; top: 50% !important;
     transform: translate(-50%, -50%) !important;
-    width: min(520px, 94vw) !important;
-    max-height: 88vh !important;
-    background: #fff !important;
-    border-radius: 24px !important;
-    padding: 0 !important;
-    z-index: 10001 !important;
-    box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25) !important;
-    display: flex !important;
-    flex-direction: column !important;
+    width: min(520px, 94vw) !important; max-height: 88vh !important;
+    background: #fff !important; border-radius: 24px !important;
+    z-index: 10001 !important; display: flex !important; flex-direction: column !important;
     overflow: hidden !important;
 }
-
-/* 모달 내부 스크롤 영역 */
-.modal-sheet > .form, 
-.modal-sheet > .contain, 
-.modal-sheet > .gradio-column {
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
-    padding: 20px !important;
-    width: 100% !important;
-    flex: 1;
+.modal-sheet > .form, .modal-sheet > .contain, .modal-sheet > .gradio-column {
+    overflow-y: auto !important; overflow-x: hidden !important;
+    padding: 20px !important; width: 100% !important; flex: 1;
 }
-
-/* 모든 행 요소 가로 배치 해제 (가로 삐져나옴 방지) */
-.modal-sheet .gr-row, 
-.modal-sheet .row {
-    display: flex !important;
-    flex-direction: column !important;
-    width: 100% !important;
-    gap: 12px !important;
+.modal-sheet .gr-row, .modal-sheet .row {
+    display: flex !important; flex-direction: column !important;
+    width: 100% !important; gap: 12px !important;
 }
-
-/* 즐겨찾기 그리드 (2열 유지) */
-.fav-grid {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr !important;
-    gap: 8px !important;
-    width: 100% !important;
-}
-
-/* 이미지 컴포넌트 최적화 */
-.modal-sheet .gradio-image {
-    width: 100% !important;
-    min-height: 180px !important;
-    overflow: hidden !important;
-}
-.modal-sheet .gradio-image img {
-    object-fit: cover !important;
-    border-radius: 12px !important;
-}
-
-/* 입력창 너비 고정 */
-.modal-sheet input, 
-.modal-sheet textarea {
-    width: 100% !important;
-}
-
-/* 푸터 하단 고정 */
 .modal-footer {
-    padding: 16px !important;
-    background: #f9fafb !important;
+    padding: 16px !important; background: #f9fafb !important;
     border-top: 1px solid var(--line) !important;
-    display: flex !important;
-    gap: 10px !important;
-    flex-direction: row !important;
+    display: flex !important; gap: 10px !important; flex-direction: row !important;
 }
+.fav-grid { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 8px !important; width: 100% !important; }
 
-/* 기존 카드 및 맵 스타일 */
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px; margin: 12px auto; max-width: 760px; position: relative; }
-.rowcard { display: flex; gap: 18px; justify-content: space-between; }
-.thumb { width: 120px; height: 120px; object-fit: cover; border-radius: 14px; flex-shrink: 0; }
-.mapFrame { width: 100%; height: 600px; border-radius: 18px; border: 1px solid var(--line); }
+/* FAB 버튼 */
+#fab-btn{position:fixed!important;right:20px!important;bottom:20px!important;z-index:2000!important;}
+#fab-btn button{width:56px!important;height:56px!important;border-radius:50%!important;background:#ef4444!important;color:#fff!important;font-size:32px!important;box-shadow:0 4px 12px rgba(0,0,0,0.3)!important;}
 
-@media (max-width: 600px) {
-    .rowcard { flex-direction: column-reverse; }
-    .thumb { width: 100%; height: 180px; }
-}
+.mapFrame{width:100%;height:600px;border-radius:18px;border:1px solid var(--line);}
 """
+
+JS_BOOT = """
+function apply(){
+  const a = document.getElementById("start_dt_box");
+  const b = document.getElementById("end_dt_box");
+  if(a){
+    const i=a.querySelector("input");
+    if(i){ i.type="datetime-local"; i.step="60"; i.style.width="100%"; }
+  }
+  if(b){
+    const i=b.querySelector("input");
+    if(i){ i.type="datetime-local"; i.step="60"; i.style.width="100%"; }
+  }
+}
+apply();
+setTimeout(apply, 500);
+"""
+
 # =====================
-# UI
+# UI 블록
 # =====================
 with gr.Blocks(css=CSS, title="Oseyo") as demo:
     search_results_state = gr.State([])
@@ -518,244 +472,134 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
             map_refresh_btn = gr.Button("🔄 지도 새로고침", size="sm")
 
     fab_btn = gr.Button("+", elem_id="fab-btn")
-
     modal_overlay = gr.HTML("<div></div>", visible=False, elem_classes=["modal-overlay"])
 
     with gr.Column(visible=False, elem_classes=["modal-sheet"]) as modal_sheet:
-        with gr.Row(elem_classes=["modal-header"]):
-            gr.HTML("<div class='modal-title'>새 공간 열기</div>")
-            close_btn = gr.Button("✕", size="sm")
+        with gr.Row():
+            gr.HTML("<div style='font-size:18px;font-weight:900;'>새 공간 열기</div>")
+            close_btn = gr.Button("✕", size="sm", variant="secondary")
 
         with gr.Row():
-            activity_text = gr.Textbox(label="📝 활동명", placeholder="예: 산책, 커피, 스터디…", scale=4)
-            add_fav_btn = gr.Button("⭐", size="sm", scale=1)
+            activity_text = gr.Textbox(label="활동명", placeholder="예: 산책, 커피, 스터디…")
+            add_fav_btn = gr.Button("⭐ 즐겨찾기 등록", size="sm")
 
         fav_msg = gr.Markdown("")
-
-        gr.Markdown("⭐ 즐겨찾기 (2×5)")
         with gr.Column(elem_classes=["fav-grid"]):
-            fav_buttons = [gr.Button("", visible=False, elem_classes=["fav-chip"]) for _ in range(10)]
+            fav_buttons = [gr.Button("", visible=False) for _ in range(10)]
 
-        photo_np = gr.Image(label="📸 사진", type="numpy", height=170)
-
-        start_txt = gr.Textbox(label="📅 시작 일시", elem_id="start_dt_box", placeholder="YYYY-MM-DDTHH:MM")
-        end_txt   = gr.Textbox(label="⏰ 종료 일시", elem_id="end_dt_box", placeholder="YYYY-MM-DDTHH:MM")
-
-        with gr.Row():
-            capacity_unlimited = gr.Checkbox(label="👥 제한없음", value=True, scale=1)
-            cap_max = gr.Slider(label="최대인원", minimum=1, maximum=10, value=4, step=1, scale=2)
+        photo_np = gr.Image(label="사진 업로드", type="numpy")
+        start_txt = gr.Textbox(label="시작 일시", elem_id="start_dt_box")
+        end_txt   = gr.Textbox(label="종료 일시", elem_id="end_dt_box")
 
         with gr.Row():
-            place_query = gr.Textbox(label="📍 장소", placeholder="예: 포항시청, 영일대", scale=4)
-            search_btn = gr.Button("🔍", scale=1, size="sm")
+            capacity_unlimited = gr.Checkbox(label="인원 제한 없음", value=True)
+            cap_max = gr.Slider(label="최대 인원", minimum=1, maximum=10, value=4, step=1)
+
+        with gr.Row():
+            place_query = gr.Textbox(label="장소 검색", placeholder="예: 포항시청")
+            search_btn = gr.Button("🔍 검색", size="sm")
 
         search_msg = gr.Markdown("")
-        place_results = gr.Radio(label="검색 결과 (클릭하면 선택됨)", choices=[], value=None, visible=True)
-
+        place_results = gr.Radio(label="검색 결과", choices=[], visible=False)
         msg_output = gr.Markdown("")
 
         with gr.Row(elem_classes=["modal-footer"]):
-            cancel_btn = gr.Button("취소", variant="secondary")
-            create_btn = gr.Button("✅ 생성", variant="primary")
+            cancel_btn = gr.Button("취소")
+            create_btn = gr.Button("✅ 공간 열기", variant="primary")
 
+    # 이벤트 바인딩
     demo.load(fn=render_home, outputs=home_html, js=JS_BOOT)
     demo.load(fn=draw_map, outputs=map_html)
-
     refresh_btn.click(fn=render_home, outputs=home_html)
     map_refresh_btn.click(fn=draw_map, outputs=map_html)
 
-    def build_fav_updates(favs):
-        favs = favs[:10]
-        ups = []
-        for i in range(10):
-            if i < len(favs):
-                ups.append(gr.update(value=favs[i], visible=True))
-            else:
-                ups.append(gr.update(value="", visible=False))
-        return ups
-
-    def open_modal_and_load():
+    def open_modal():
         st = now_kst().replace(second=0, microsecond=0)
         en = st + timedelta(hours=2)
-        st_s = st.strftime("%Y-%m-%dT%H:%M")
-        en_s = en.strftime("%Y-%m-%dT%H:%M")
-
         favs = db_list_favorites()
-        fav_ups = build_fav_updates(favs)
+        ups = [gr.update(visible=False, value="")] * 10
+        for i, f in enumerate(favs[:10]):
+            ups[i] = gr.update(visible=True, value=f)
+        return (gr.update(visible=True), gr.update(visible=True), st.strftime("%Y-%m-%dT%H:%M"), en.strftime("%Y-%m-%dT%H:%M"), *ups)
 
-        return (
-            gr.update(visible=True),
-            gr.update(visible=True),
-            st_s,
-            en_s,
-            "",
-            gr.update(visible=True, choices=[], value=None),
-            gr.update(value="{}"),
-            gr.update(value=""),
-            gr.update(value=""),
-            *fav_ups
-        )
-
-    fab_btn.click(
-        fn=open_modal_and_load,
-        outputs=[modal_overlay, modal_sheet, start_txt, end_txt, msg_output, place_results,
-                 selected_place_state, place_query, search_msg, *fav_buttons],
-        js=JS_BOOT
-    )
+    fab_btn.click(fn=open_modal, outputs=[modal_overlay, modal_sheet, start_txt, end_txt, *fav_buttons], js=JS_BOOT)
 
     def close_modal():
-        return (gr.update(visible=False), gr.update(visible=False))
+        return gr.update(visible=False), gr.update(visible=False)
 
     close_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet])
     cancel_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet])
 
-    def add_to_favorites(activity):
-        activity = (activity or "").strip()
-        if not activity:
-            favs = db_list_favorites()
-            return "⚠️ 활동명을 입력해 주세요", *build_fav_updates(favs)
-        db_add_favorite(activity)
+    def add_fav(act):
+        db_add_favorite(act)
         favs = db_list_favorites()
-        return f"✅ '{activity}'를 즐겨찾기에 추가했습니다", *build_fav_updates(favs)
+        ups = [gr.update(visible=False, value="")] * 10
+        for i, f in enumerate(favs[:10]):
+            ups[i] = gr.update(visible=True, value=f)
+        return "즐겨찾기에 추가되었습니다.", *ups
 
-    add_fav_btn.click(fn=add_to_favorites, inputs=[activity_text], outputs=[fav_msg, *fav_buttons])
+    add_fav_btn.click(fn=add_fav, inputs=activity_text, outputs=[fav_msg, *fav_buttons])
 
-    def choose_fav(v):
-        return v or ""
     for b in fav_buttons:
-        b.click(fn=choose_fav, inputs=[b], outputs=[activity_text])
+        b.click(fn=lambda v: v, inputs=b, outputs=activity_text)
 
-    def search_and_store(query):
-        cands, err = kakao_keyword_search(query, size=10)
-        if err:
-            return cands, gr.update(choices=[], value=None, visible=True), err, "{}"
+    def search_place(q):
+        cands, err = kakao_keyword_search(q)
+        if err: return [], gr.update(visible=False), err, "{}"
         labels = [c["label"] for c in cands]
-        return (cands, gr.update(choices=labels, value=None, visible=True), f"✅ {len(cands)}개 검색됨", "{}")
+        return cands, gr.update(choices=labels, visible=True, value=None), f"{len(labels)}건 검색됨", "{}"
 
-    search_btn.click(fn=search_and_store, inputs=[place_query],
-                     outputs=[search_results_state, place_results, search_msg, selected_place_state])
+    search_btn.click(fn=search_place, inputs=place_query, outputs=[search_results_state, place_results, search_msg, selected_place_state])
 
-    def update_selected(cands, label):
-        if not label or not cands:
-            return "{}", "", gr.update(visible=True), gr.update()
+    def select_place(cands, label):
         for c in cands:
-            if c["label"] == label:
-                selected_json = json.dumps(c, ensure_ascii=False)
-                msg = f"✅ '{c['place']}' 선택됨"
-                # ✅ 선택하면 라디오 숨기고, 텍스트박스에 고정(라벨 표시)
-                return selected_json, msg, gr.update(visible=False), gr.update(value=label)
-        return "{}", "", gr.update(visible=True), gr.update()
+            if c["label"] == label: return json.dumps(c, ensure_ascii=False), f"선택됨: {c['place']}"
+        return "{}", ""
 
-    place_results.change(fn=update_selected, inputs=[search_results_state, place_results],
-                         outputs=[selected_place_state, search_msg, place_results, place_query])
+    place_results.change(fn=select_place, inputs=[search_results_state, place_results], outputs=[selected_place_state, search_msg])
 
-    def create_and_close(activity_text, start_txt, end_txt, capacity_unlimited, cap_max, photo_np, selected_place_json):
-        msg, home, mapv = create_event(activity_text, start_txt, end_txt, capacity_unlimited, cap_max, photo_np, selected_place_json)
+    def finalize(act, st, en, cap_u, cap_m, photo, loc):
+        msg, home, mapv = create_event(act, st, en, cap_u, cap_m, photo, loc)
         if msg.startswith("✅"):
-            return (msg, home, mapv, gr.update(visible=False), gr.update(visible=False))
-        else:
-            return (msg, home, mapv, gr.update(visible=True), gr.update(visible=True))
+            return msg, home, mapv, gr.update(visible=False), gr.update(visible=False)
+        return msg, home, mapv, gr.update(visible=True), gr.update(visible=True)
 
-    create_btn.click(
-        fn=create_and_close,
-        inputs=[activity_text, start_txt, end_txt, capacity_unlimited, cap_max, photo_np, selected_place_state],
-        outputs=[msg_output, home_html, map_html, modal_overlay, modal_sheet],
-        js=JS_BOOT
-    )
+    create_btn.click(fn=finalize, inputs=[activity_text, start_txt, end_txt, capacity_unlimited, cap_max, photo_np, selected_place_state], outputs=[msg_output, home_html, map_html, modal_overlay, modal_sheet])
 
 # =====================
-# FastAPI + Kakao Map
+# FastAPI 라우트
 # =====================
 app = FastAPI()
 
 @app.get("/delete/{space_id}")
 def delete(space_id: str):
-    try:
-        db_delete_space(space_id)
-    except:
-        pass
+    db_delete_space(space_id)
     return RedirectResponse(url="/", status_code=302)
 
 @app.get("/kakao_map")
 def kakao_map():
-    if not KAKAO_JAVASCRIPT_KEY:
-        return HTMLResponse("<html><body><h3>KAKAO_JAVASCRIPT_KEY 필요</h3></body></html>")
-
-    points = map_points_payload()
-    if points:
-        center_lat = sum(p["lat"] for p in points) / len(points)
-        center_lng = sum(p["lng"] for p in points) / len(points)
-    else:
-        center_lat, center_lng = 36.0190, 129.3435
-
+    if not KAKAO_JAVASCRIPT_KEY: return HTMLResponse("KAKAO_JAVASCRIPT_KEY 필요")
+    pts = map_points_payload()
+    c_lat = sum(p["lat"] for p in pts)/len(pts) if pts else 36.019
+    c_lng = sum(p["lng"] for p in pts)/len(pts) if pts else 129.343
+    
     html = f"""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<style>
-html,body{{margin:0;height:100%;}}
-#map{{width:100%;height:100%;}}
-.custom-info{{padding:10px;font-family:system-ui;font-size:12px;line-height:1.4;min-width:200px;}}
-.info-title{{font-weight:900;margin-bottom:6px;font-size:13px;}}
-.info-text{{color:#6B7280;margin:2px 0;font-size:11px;}}
-.info-img{{width:100%;height:120px;object-fit:cover;border-radius:10px;margin:6px 0;border:1px solid #eee;}}
-</style>
-<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
-</head>
-<body>
-<div id="map"></div>
-<script>
-const map=new kakao.maps.Map(document.getElementById('map'),{{center:new kakao.maps.LatLng({center_lat},{center_lng}),level:6}});
-const points={json.dumps(points,ensure_ascii=False)};
-const bounds=new kakao.maps.LatLngBounds();
-let activeIW = new kakao.maps.InfoWindow({{removable:true}});
-
-function escHtml(s){{
-  return String(s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
-}}
-
-if(points.length===0){{
-  const pos = new kakao.maps.LatLng({center_lat},{center_lng});
-  new kakao.maps.Marker({{position:pos,map:map}});
-}} else {{
-  points.forEach(p=>{{
-    const pos=new kakao.maps.LatLng(p.lat,p.lng);
-    bounds.extend(pos);
-    const marker=new kakao.maps.Marker({{position:pos,map:map}});
-    kakao.maps.event.addListener(marker,'click',function(){{
-      activeIW.close();
-      const img = (p.photo_b64 && p.photo_b64.length>0)
-        ? `<img class="info-img" src="data:image/jpeg;base64,${{p.photo_b64}}"/>`
-        : "";
-      const content = `
-        <div class="custom-info">
-          <div class="info-title">${{escHtml(p.title)}}</div>
-          ${{img}}
-          <div class="info-text">${{escHtml(p.period)}}</div>
-          <div class="info-text">${{escHtml(p.addr)}}</div>
-          <div class="info-text" style="margin-top:4px;color:#9CA3AF;">ID:${{escHtml(p.id)}}</div>
-        </div>
-      `;
-      activeIW.setContent(content);
-      activeIW.open(map, marker);
+    <!DOCTYPE html><html><head><meta charset="utf-8"/><script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
+    <style>html,body,#map{{width:100%;height:100%;margin:0;}}</style></head>
+    <body><div id="map"></div><script>
+    const map=new kakao.maps.Map(document.getElementById('map'),{{center:new kakao.maps.LatLng({c_lat},{c_lng}),level:7}});
+    const pts={json.dumps(pts, ensure_ascii=False)};
+    pts.forEach(p=>{{
+        const m = new kakao.maps.Marker({{position:new kakao.maps.LatLng(p.lat,p.lng),map:map}});
+        const iw = new kakao.maps.InfoWindow({{content:`<div style="padding:10px;font-size:12px;"><b>${{p.title}}</b><br>${{p.period}}<br>${{p.addr}}</div>`}});
+        kakao.maps.event.addListener(m,'click',()=>iw.open(map,m));
     }});
-  }});
-  map.setBounds(bounds);
-}}
-</script>
-</body>
-</html>
-"""
+    </script></body></html>
+    """
     return HTMLResponse(html)
 
 app = gr.mount_gradio_app(app, demo, path="/")
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", "7860"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
-
-
-
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 7860)))
