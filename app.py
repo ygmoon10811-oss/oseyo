@@ -276,8 +276,11 @@ with gr.Blocks(css=CSS) as demo:
 # FastAPI
 # =====================
 app = FastAPI()
-app = gr.mount_gradio_app(app, demo, path="/app")
+
+# ✅ Gradio를 루트에 직접 마운트
+app = gr.mount_gradio_app(app, demo, path="/")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    port = int(os.environ.get("PORT", 7860))  # ✅ Render는 PORT 환경변수 사용
+    uvicorn.run(app, host="0.0.0.0", port=port)
