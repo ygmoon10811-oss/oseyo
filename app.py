@@ -382,108 +382,124 @@ def create_event(activity_text, start_txt, end_txt, capacity_unlimited, cap_max,
 # =====================
 # ✅ CSS: 가로스크롤/눌림/가림 전부 차단
 # =====================
+# =====================
+# ✅ CSS: 가로스크롤/눌림/가림 방지 최적화
+# =====================
 CSS = """
 :root{--bg:#FAF9F6;--ink:#1F2937;--muted:#6B7280;--line:#E5E3DD;--card:#ffffffcc;--danger:#ef4444;}
+
+/* 전체 레이아웃 강제 고정 */
 *{box-sizing:border-box!important;}
-html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;margin:0;padding:0;}
-.gradio-container{background:var(--bg)!important;max-width:none!important;width:100vw!important;margin:0!important;padding:0 16px 120px!important;overflow-x:hidden!important;}
-.gradio-container .wrap, .gradio-container .contain{max-width:none!important;width:100%!important;overflow-x:hidden!important;}
-
-/* 카드 */
-.banner{margin:10px auto 6px;padding:10px 12px;border-radius:14px;font-size:13px;}
-.banner.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;}
-.banner.warn{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;}
-.card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;margin:12px auto;max-width:760px;}
-.card.empty{text-align:center;padding:40px;}
-.h{font-size:18px;font-weight:900;margin-bottom:8px;}
-.p{font-size:14px;color:var(--muted);}
-.rowcard{display:grid;grid-template-columns:1fr 320px;gap:18px;padding-right:86px;}
-.title{font-size:16px;font-weight:900;color:var(--ink);margin-bottom:6px;}
-.period{font-size:14px;font-weight:900;color:#111827;margin:2px 0 8px;}
-.muted{font-size:13px;color:var(--muted);line-height:1.55;margin:2px 0;}
-.idline{margin-top:8px;font-size:12px;color:#9CA3AF;}
-.thumb{width:100%;height:180px;object-fit:cover;border-radius:14px;}
-.thumb.placeholder{background:rgba(0,0,0,0.05);}
-.btn-del{position:absolute;right:14px;bottom:14px;background:var(--danger);color:#fff!important;font-weight:900;font-size:13px;padding:10px 14px;border-radius:12px;text-decoration:none;}
-
-.mapWrap{width:100%;margin:0;padding:0;}
-.mapFrame{width:100%;height:650px;border:0;border-radius:18px;max-width:980px;display:block;margin:0 auto;}
-
-/* FAB */
-#fab-btn{position:fixed!important;right:20px!important;bottom:20px!important;z-index:20000!important;width:50px!important;height:50px!important;padding:0!important;}
-#fab-btn button{
-  width:50px!important;height:50px!important;min-width:50px!important;min-height:50px!important;border-radius:50%!important;padding:0!important;
-  border:3px solid #ef4444!important;background:#fff!important;color:#111!important;
-  font-size:34px!important;font-weight:900!important;line-height:44px!important;
-  box-shadow:0 6px 16px rgba(0,0,0,0.22)!important;
-}
-#fab-btn button:hover{transform:scale(1.05)!important;}
-
-/* overlay */
-.modal-overlay{position:fixed!important;inset:0!important;background:rgba(0,0,0,0.5)!important;z-index:10000!important;backdrop-filter:blur(3px)!important;}
-
-/* ✅ 모달: "세로 스크롤만" */
-.modal-sheet{
-  position:fixed!important;left:50%!important;top:50%!important;transform:translate(-50%,-50%)!important;
-  width:min(520px,92vw)!important;max-height:88vh!important;
-  overflow-y:auto!important;overflow-x:hidden!important;
-  background:#fff!important;border:1px solid var(--line)!important;border-radius:20px!important;
-  padding:16px!important;
-  z-index:10001!important;box-shadow:0 20px 40px rgba(0,0,0,0.15)!important;
+html, body {
+    width: 100%;
+    overflow-x: hidden !important;
+    margin: 0; padding: 0;
 }
 
-/* ✅ 모달 내부 모든 요소 가로폭 강제/가로스크롤 차단 */
-.modal-sheet .gr-row{flex-wrap:wrap!important;gap:10px!important;}
-.modal-sheet .gr-form, .modal-sheet .form, .modal-sheet .wrap, .modal-sheet .contain{width:100%!important;max-width:100%!important;}
-
-/* input/textarea/select 가로 스크롤 방지 */
-.modal-sheet input, .modal-sheet textarea, .modal-sheet select{
-  width:100%!important;max-width:100%!important;
-  overflow:hidden!important;text-overflow:ellipsis!important;
+/* Gradio 컨테이너 가로폭 제한 */
+.gradio-container {
+    max-width: 100vw !important;
+    overflow-x: hidden !important;
 }
 
-/* ✅ 사진 컴포넌트 눌림 방지 (핵심) */
-.modal-sheet .gradio-image,
-.modal-sheet .gradio-image .wrap,
-.modal-sheet .gradio-image .container,
-.modal-sheet .gradio-image .image-container,
-.modal-sheet .gradio-image .upload-container{
-  width:100%!important;
-  min-height:170px!important;
-}
-.modal-sheet .gradio-image img{
-  width:100%!important;
-  max-height:170px!important;
-  object-fit:cover!important;
-  border-radius:14px!important;
+/* 모달 오버레이 */
+.modal-overlay {
+    position: fixed !important;
+    inset: 0 !important;
+    background: rgba(0,0,0,0.6) !important;
+    z-index: 10000 !important;
+    backdrop-filter: blur(4px) !important;
 }
 
-/* 헤더 */
-.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:10px;border-bottom:2px solid var(--line);}
-.modal-title{font-size:18px;font-weight:900;color:var(--ink);}
-
-/* 즐겨찾기 2x5 */
-.fav-grid{display:grid!important;grid-template-columns:1fr 1fr!important;gap:8px!important;margin:8px 0 12px!important;}
-.fav-chip button{width:100%!important;border-radius:12px!important;padding:10px 12px!important;font-weight:900!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;}
-
-/* footer sticky */
-.modal-footer{
-  position:sticky!important;bottom:0!important;
-  margin-top:14px!important;
-  display:flex!important;gap:10px!important;
-  padding:12px!important;
-  background:#fff!important;
-  border-top:2px solid var(--line)!important;
-  z-index:10002!important;
-  border-radius:14px!important;
+/* ✅ 모달 시트: 세로 스크롤만 허용, 가로 스크롤 원천 봉쇄 */
+.modal-sheet {
+    position: fixed !important;
+    left: 50% !important;
+    top: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    width: min(520px, 94vw) !important;
+    max-height: 90vh !important;
+    background: #fff !important;
+    border-radius: 24px !important;
+    padding: 0 !important; /* 패딩을 내부 컨테이너로 위임 */
+    z-index: 10001 !important;
+    box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important; /* 내부에서 스크롤 처리 */
 }
-.modal-footer button{flex:1!important;padding:12px!important;border-radius:12px!important;font-weight:900!important;font-size:14px!important;}
 
-@media (max-width:768px){
-  .rowcard{grid-template-columns:1fr;padding-right:14px;}
-  .thumb{height:200px;}
-  .modal-sheet{width:94vw!important;max-height:90vh!important;}
+/* 모달 내부 스크롤 영역 */
+.modal-sheet > .form, 
+.modal-sheet > .contain, 
+.modal-sheet > .gradio-column {
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    padding: 20px !important;
+    width: 100% !important;
+    flex: 1;
+}
 
+/* ✅ 모든 행(Row) 요소 가로 배치 강제 해제 (가로 삐져나옴 방지) */
+.modal-sheet .gr-row, 
+.modal-sheet .row {
+    display: flex !important;
+    flex-direction: column !important; /* 모바일/좁은화면 대응을 위해 기본 수직 배치 */
+    width: 100% !important;
+    gap: 12px !important;
+}
+
+/* 가로로 나란히 있어야 할 버튼/슬라이더 등만 예외 처리 */
+@media (min-width: 400px) {
+    .modal-sheet .modal-footer { flex-direction: row !important; }
+}
+
+/* 즐겨찾기 그리드 (2열 유지) */
+.fav-grid {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+    width: 100% !important;
+}
+
+/* 이미지 컴포넌트 최적화 */
+.modal-sheet .gradio-image {
+    width: 100% !important;
+    min-height: 180px !important;
+}
+.modal-sheet .gradio-image img {
+    object-fit: cover !important;
+    border-radius: 12px !important;
+}
+
+/* 입력창 너비 고정 */
+.modal-sheet input, 
+.modal-sheet textarea {
+    width: 100% !important;
+}
+
+/* 푸터 하단 고정 */
+.modal-footer {
+    padding: 16px !important;
+    background: #f9fafb !important;
+    border-top: 1px solid var(--line) !important;
+    display: flex !important;
+    gap: 10px !important;
+}
+
+/* 불필요한 스크롤바 숨기기 */
+.modal-sheet::-webkit-scrollbar { width: 6px; }
+.modal-sheet::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 10px; }
+
+/* 기존 카드 스타일 유지 */
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px; margin: 12px auto; max-width: 760px; }
+.rowcard { display: flex; gap: 18px; justify-content: space-between; }
+.thumb { width: 120px; height: 120px; object-fit: cover; border-radius: 14px; flex-shrink: 0; }
+@media (max-width: 600px) {
+    .rowcard { flex-direction: column-reverse; }
+    .thumb { width: 100%; height: 180px; }
+}
+"""
 /* =========================
    ✅ 모달: 스크롤은 모달만!
    ========================= */
@@ -825,4 +841,5 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "7860"))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
