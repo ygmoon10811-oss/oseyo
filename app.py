@@ -30,8 +30,8 @@ def db_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def db_init():
+    # ❗DROP TABLE 제거 (이게 이벤트가 사라지는 원인)
     with db_conn() as con:
-        con.execute("DROP TABLE IF EXISTS spaces")
         con.execute("""
         CREATE TABLE IF NOT EXISTS spaces (
             id TEXT PRIMARY KEY,
@@ -146,13 +146,8 @@ def db_add_favorite(activity: str):
     if not activity:
         return
     with db_conn() as con:
-        con.execute("INSERT OR IGNORE INTO favorites (activity, created_at) VALUES (?, ?)", 
+        con.execute("INSERT OR IGNORE INTO favorites (activity, created_at) VALUES (?, ?)",
                    (activity, now_kst().isoformat()))
-        con.commit()
-
-def db_delete_favorite(activity: str):
-    with db_conn() as con:
-        con.execute("DELETE FROM favorites WHERE activity = ?", (activity,))
         con.commit()
 
 def image_np_to_b64(img_np):
@@ -229,7 +224,7 @@ def fmt_period(st_iso: str, en_iso: str) -> str:
 
 def render_home():
     items = active_spaces()
-    
+
     persistent = os.path.isdir("/var/data")
     banner = (
         f"<div class='banner ok'>✅ 영구저장 모드</div>"
@@ -296,73 +291,71 @@ def draw_map():
     </div>
     """
 
-def open_modal():
-    st = now_kst().replace(second=0, microsecond=0)
-    en = st + timedelta(hours=2)
-    return (
-        gr.update(visible=True),
-        gr.update(visible=True),
-        st,
-        en,
-        ""
-    )
+# -------------------------
+# 날짜/시간 파싱 (키보드 입력까지 커버)
+# -------------------------
+def parse_dt_any(v):
+    """
+    gr.DateTime 값은 datetime 또는 str로 들어올 수 있음.
+    키보드 입력(문자열)도 허용:
+    - ISO (2026-01-06 10:30, 2026-01-06T10:30, 2026-01-06T10:30:00+09:00 등)
+    """
+    if v is None or v == "":
+        return None
 
-def close_modal():
-    return (
-        gr.update(visible=False),
-        gr.update(visible=False),
-    )
+    if isinstance(v, datetime):
+        dt = v
+    elif isinstance(v, str):
+        s = v.strip()
+        # 흔한 케이스 보정
+        s = s.replace("Z", "+00:00")
+        s = s.replace("/", "-")
+        # "YYYY-MM-DD HH:MM" → fromisoformat 가능
+        try:
+            dt = datetime.fromisoformat(s)
+        except:
+            # 마지막 보루: 초가 없거나 공백 등 보정
+            try:
+                if "T" not in s and " " in s:
+                    dt = datetime.fromisoformat(s)
+                else:
+                    return None
+            except:
+                return None
+    else:
+        return None
+
+    # tz 보정
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KST)
+    else:
+        dt = dt.astimezone(KST)
+    return dt
 
 def create_event(activity_text, start_dt, end_dt, capacity_unlimited, cap_max, photo_np, selected_place_json):
-    
     print(f"[CREATE] activity={activity_text}, start={start_dt}, end={end_dt}")
-    
+
     act = (activity_text or "").strip()
     if not act:
         return "⚠️ 활동명을 입력해 주세요", render_home(), draw_map()
-    
+
     try:
         place_data = json.loads(selected_place_json) if selected_place_json else None
     except:
         place_data = None
-    
+
     if not place_data:
         return "⚠️ 장소를 검색하고 선택해 주세요", render_home(), draw_map()
-    
-    # DateTime 위젯 값 처리
-    try:
-        if isinstance(start_dt, str):
-            st = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
-        elif isinstance(start_dt, datetime):
-            st = start_dt
-        else:
-            return "⚠️ 시작 일시를 선택해 주세요", render_home(), draw_map()
-        
-        if isinstance(end_dt, str):
-            en = datetime.fromisoformat(end_dt.replace('Z', '+00:00'))
-        elif isinstance(end_dt, datetime):
-            en = end_dt
-        else:
-            return "⚠️ 종료 일시를 선택해 주세요", render_home(), draw_map()
-        
-        # KST로 변환
-        if st.tzinfo is None:
-            st = st.replace(tzinfo=KST)
-        else:
-            st = st.astimezone(KST)
-        
-        if en.tzinfo is None:
-            en = en.replace(tzinfo=KST)
-        else:
-            en = en.astimezone(KST)
-        
-        if en <= st:
-            return "⚠️ 종료 일시는 시작 일시보다 뒤여야 합니다", render_home(), draw_map()
-            
-    except Exception as e:
-        print(f"[ERROR] 시간 파싱 실패: {e}")
-        return f"⚠️ 날짜/시간을 선택해 주세요", render_home(), draw_map()
-    
+
+    st = parse_dt_any(start_dt)
+    en = parse_dt_any(end_dt)
+    if st is None:
+        return "⚠️ 시작 일시를 선택/입력해 주세요", render_home(), draw_map()
+    if en is None:
+        return "⚠️ 종료 일시를 선택/입력해 주세요", render_home(), draw_map()
+    if en <= st:
+        return "⚠️ 종료 일시는 시작 일시보다 뒤여야 합니다", render_home(), draw_map()
+
     capacityEnabled = not bool(capacity_unlimited)
     cap_max_val = None
     if capacityEnabled:
@@ -371,11 +364,11 @@ def create_event(activity_text, start_dt, end_dt, capacity_unlimited, cap_max, p
             cap_max_val = max(1, min(cap_max_val, 10))
         except:
             cap_max_val = 4
-    
+
     photo_b64 = image_np_to_b64(photo_np)
     title = act if len(act) <= 30 else act[:30] + "…"
     new_id = uuid.uuid4().hex[:8]
-    
+
     try:
         db_insert_space({
             "id": new_id,
@@ -400,7 +393,10 @@ CSS = """
 :root{--bg:#FAF9F6;--ink:#1F2937;--muted:#6B7280;--line:#E5E3DD;--card:#ffffffcc;--danger:#ef4444;}
 *{box-sizing:border-box!important;}
 html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;margin:0;padding:0;}
-.gradio-container{background:var(--bg)!important;max-width:1200px!important;margin:0 auto!important;padding-bottom:100px!important;}
+.gradio-container{background:var(--bg)!important;max-width:1200px!important;margin:0 auto!important;padding-bottom:110px!important;}
+
+/* ✅ 전역 가로스크롤 차단 */
+#root, .contain, .wrap, .gradio-container, .gr-block, .gr-form { overflow-x:hidden!important; }
 
 .banner{margin:10px auto 6px;padding:10px 12px;border-radius:14px;font-size:13px;}
 .banner.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;}
@@ -422,32 +418,80 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 .mapWrap{width:100%;margin:0;padding:0;}
 .mapFrame{width:100%;height:600px;border:0;border-radius:18px;}
 
-.fab-container{position:fixed!important;right:20px!important;bottom:20px!important;z-index:999!important;height:0!important;overflow:visible!important;}
-.fab-container button{width:56px!important;height:56px!important;min-width:56px!important;min-height:56px!important;border-radius:50%!important;border:0!important;background:#2B2A27!important;color:#FAF9F6!important;font-size:28px!important;font-weight:300!important;line-height:56px!important;padding:0!important;box-shadow:0 4px 12px rgba(0,0,0,0.2)!important;cursor:pointer!important;transition:all 0.2s ease!important;}
+/* ✅ FAB: 적당한 원형, 모달 열리면 자동 숨김 */
+.fab-container{position:fixed!important;right:20px!important;bottom:20px!important;z-index:9000!important;height:0!important;overflow:visible!important;}
+.fab-container button{
+  width:56px!important;height:56px!important;min-width:56px!important;min-height:56px!important;
+  border-radius:50%!important;border:0!important;background:#2B2A27!important;color:#FAF9F6!important;
+  font-size:28px!important;font-weight:300!important;line-height:56px!important;padding:0!important;
+  box-shadow:0 4px 12px rgba(0,0,0,0.2)!important;cursor:pointer!important;transition:all 0.2s ease!important;
+}
 .fab-container button:hover{transform:scale(1.08)!important;box-shadow:0 6px 16px rgba(0,0,0,0.3)!important;}
+/* 모달 열리면 FAB 숨김(겹침 방지) */
+body.modal-open .fab-container{display:none!important;}
 
+/* ✅ 모달 overlay */
 .modal-overlay{position:fixed!important;inset:0!important;background:rgba(0,0,0,0.5)!important;z-index:10000!important;backdrop-filter:blur(3px)!important;}
 
-.modal-sheet{position:fixed!important;left:50%!important;top:50%!important;transform:translate(-50%,-50%)!important;width:min(500px,92vw)!important;max-height:88vh!important;overflow-y:auto!important;overflow-x:hidden!important;background:white!important;border:1px solid var(--line)!important;border-radius:20px!important;padding:20px 20px 100px 20px!important;z-index:10001!important;box-shadow:0 20px 40px rgba(0,0,0,0.15)!important;}
-.modal-sheet::-webkit-scrollbar{width:8px;}
-.modal-sheet::-webkit-scrollbar-track{background:#f1f1f1;border-radius:4px;}
-.modal-sheet::-webkit-scrollbar-thumb{background:#bbb;border-radius:4px;}
-.modal-sheet::-webkit-scrollbar-thumb:hover{background:#999;}
+/*
+  ✅ 핵심: 모달 시트에서 "상하 스크롤 1개만"
+  - overflow-y:auto (시트만)
+  - overflow-x:hidden (가로/내부 스크롤 금지)
+  - 내부 컴포넌트가 별도 스크롤 생성 못하게 max-height/overflow 제거
+*/
+.modal-sheet{
+  position:fixed!important;left:50%!important;top:50%!important;transform:translate(-50%,-50%)!important;
+  width:min(500px,92vw)!important;
+  max-height:88vh!important;
+  overflow-y:auto!important;      /* ✅ 오직 이 스크롤만 허용 */
+  overflow-x:hidden!important;    /* ✅ 가로스크롤 금지 */
+  overscroll-behavior:contain!important;
+  background:white!important;border:1px solid var(--line)!important;border-radius:20px!important;
+  padding:20px 20px 120px 20px!important; /* ✅ 푸터 가림 방지: 하단 여유 */
+  z-index:10001!important;box-shadow:0 20px 40px rgba(0,0,0,0.15)!important;
+}
+/* ✅ 내부 요소에서 별도 스크롤 못 만들게 */
+.modal-sheet *{overflow:visible!important;}
+.modal-sheet .gr-box,
+.modal-sheet .gr-block,
+.modal-sheet .gr-form,
+.modal-sheet .wrap,
+.modal-sheet .contain { overflow:visible!important; }
 
+/* 모달 헤더 */
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid var(--line);}
 .modal-title{font-size:20px;font-weight:900;color:var(--ink);}
 
-.modal-sheet label{font-size:13px!important;font-weight:600!important;margin-bottom:6px!important;display:block!important;}
-.modal-sheet input[type="text"],.modal-sheet textarea{font-size:14px!important;padding:10px 12px!important;border-radius:10px!important;width:100%!important;border:1px solid var(--line)!important;}
-.modal-sheet .gr-box{gap:12px!important;}
+/* 인풋 가독성 */
+.modal-sheet label{font-size:13px!important;font-weight:700!important;margin-bottom:6px!important;display:block!important;}
+.modal-sheet input[type="text"], .modal-sheet textarea{
+  font-size:14px!important;padding:10px 12px!important;border-radius:10px!important;width:100%!important;border:1px solid var(--line)!important;
+}
 
-.modal-footer{position:fixed!important;left:50%!important;bottom:0!important;transform:translateX(-50%)!important;width:min(500px,92vw)!important;display:flex!important;gap:10px!important;padding:16px 20px!important;background:white!important;border-top:2px solid var(--line)!important;border-radius:0 0 20px 20px!important;z-index:10002!important;box-shadow:0 -4px 12px rgba(0,0,0,0.08)!important;}
-.modal-footer button{flex:1!important;padding:12px!important;border-radius:12px!important;font-weight:700!important;font-size:14px!important;}
+/* ✅ DateTime 팝업이 모달/오버레이 위로 뜨게(클릭 안되는 문제 해결) */
+.flatpickr-calendar{z-index:10050!important;}
+.flatpickr-time{z-index:10050!important;}
+.flatpickr-months, .flatpickr-weekdays, .flatpickr-days{z-index:10050!important;}
+
+/* ✅ 검색 결과 Radio가 내부 스크롤 만들지 않게 (높이 고정/스크롤 제거) */
+.modal-sheet .gradio-radio, .modal-sheet .gradio-checkboxgroup, .modal-sheet .gradio-dropdown{
+  max-height:none!important;
+}
+.modal-sheet .gradio-radio .wrap{max-height:none!important;}
+
+/* ✅ 모달 푸터: 고정, 내용 안 가리도록 시트 패딩 확보 */
+.modal-footer{
+  position:fixed!important;left:50%!important;bottom:0!important;transform:translateX(-50%)!important;
+  width:min(500px,92vw)!important;display:flex!important;gap:10px!important;
+  padding:16px 20px!important;background:white!important;border-top:2px solid var(--line)!important;
+  border-radius:0 0 20px 20px!important;z-index:10002!important;box-shadow:0 -4px 12px rgba(0,0,0,0.08)!important;
+}
+.modal-footer button{flex:1!important;padding:12px!important;border-radius:12px!important;font-weight:800!important;font-size:14px!important;}
 
 @media (max-width:768px){
   .rowcard{grid-template-columns:1fr;padding-right:14px;}
   .thumb{height:200px;}
-  .modal-sheet{width:94vw!important;max-height:90vh!important;padding:16px 16px 100px 16px!important;}
+  .modal-sheet{width:94vw!important;max-height:90vh!important;padding:16px 16px 120px 16px!important;}
   .modal-footer{width:94vw!important;padding:14px 16px!important;}
   .modal-title{font-size:18px!important;}
   .fab-container{right:16px!important;bottom:16px!important;}
@@ -455,131 +499,170 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 }
 """
 
+# -------------------------
+# UI
+# -------------------------
 with gr.Blocks(css=CSS, title="Oseyo") as demo:
     search_results_state = gr.State([])
     selected_place_state = gr.Textbox(visible=False, value="{}")
-    
+
+    # ✅ 모달 상태에 따라 body class 토글용(HTML)
+    body_class = gr.HTML("<script>document.body.classList.remove('modal-open');</script>")
+
     gr.Markdown("# 지금, 열려 있습니다\n원하시면 오세요")
-    
+
     with gr.Tabs():
         with gr.Tab("탐색"):
             home_html = gr.HTML()
             refresh_btn = gr.Button("🔄 새로고침", size="sm")
-        
+
         with gr.Tab("지도"):
             map_html = gr.HTML()
             map_refresh_btn = gr.Button("🔄 지도 새로고침", size="sm")
-    
+
     with gr.Row(elem_classes=["fab-container"]):
         fab_btn = gr.Button("+", elem_id="fab")
-    
+
     modal_overlay = gr.HTML("<div></div>", visible=False, elem_classes=["modal-overlay"])
-    
+
     with gr.Column(visible=False, elem_classes=["modal-sheet"]) as modal_sheet:
         with gr.Row(elem_classes=["modal-header"]):
             gr.HTML("<div class='modal-title'>새 공간 열기</div>")
             close_btn = gr.Button("✕", size="sm")
-        
+
         with gr.Row():
             activity_text = gr.Textbox(label="📝 활동명", placeholder="예: 산책, 커피, 스터디…", scale=4)
             add_fav_btn = gr.Button("⭐", size="sm", scale=1)
-        
+
         favorites_dropdown = gr.Dropdown(label="⭐ 즐겨찾기", choices=[], value=None, interactive=True)
         fav_msg = gr.Markdown("")
-        
+
         photo_np = gr.Image(label="📸 사진", type="numpy", height=160)
-        
+
+        # ✅ 클릭(팝업) + 키보드 입력 모두 허용
         start_dt = gr.DateTime(label="📅 시작 일시", include_time=True)
         end_dt = gr.DateTime(label="⏰ 종료 일시", include_time=True)
-        
+
         with gr.Row():
             capacity_unlimited = gr.Checkbox(label="👥 제한없음", value=True, scale=1)
             cap_max = gr.Slider(label="최대인원", minimum=1, maximum=10, value=4, step=1, scale=2)
-        
+
         with gr.Row():
             place_query = gr.Textbox(label="📍 장소", placeholder="예: 포항시청, 영일대", scale=4)
             search_btn = gr.Button("🔍", scale=1, size="sm")
-        
+
         search_msg = gr.Markdown("")
-        place_results = gr.Radio(label="검색 결과 (클릭하면 선택됨)", choices=[], value=None)
+        # ✅ 선택하면 자동으로 숨길 거라 visible=True로 두고 update로 제어
+        place_results = gr.Radio(label="검색 결과 (클릭하면 선택됨)", choices=[], value=None, visible=True)
+
         msg_output = gr.Markdown("")
-        
+
         with gr.Row(elem_classes=["modal-footer"]):
             cancel_btn = gr.Button("취소", variant="secondary")
             create_btn = gr.Button("✅ 생성", variant="primary")
-    
+
     demo.load(fn=render_home, outputs=home_html)
     demo.load(fn=draw_map, outputs=map_html)
-    
+
     refresh_btn.click(fn=render_home, outputs=home_html)
     map_refresh_btn.click(fn=draw_map, outputs=map_html)
-    
-    # 모달 열기 시 즐겨찾기 목록 로드
+
+    # 모달 열기 시 즐겨찾기 목록 로드 + body class ON
     def open_and_load_favs():
         st = now_kst().replace(second=0, microsecond=0)
         en = st + timedelta(hours=2)
         favs = db_list_favorites()
+        body = "<script>document.body.classList.add('modal-open');</script>"
         return (
-            gr.update(visible=True),
-            gr.update(visible=True),
+            gr.update(visible=True),   # overlay
+            gr.update(visible=True),   # sheet
+            body,                      # body class
             st,
             en,
             "",
-            gr.update(choices=favs, value=None)
+            gr.update(choices=favs, value=None),
+            gr.update(visible=True, choices=[], value=None),  # place_results 초기화
+            gr.update(value="{}"),     # selected_place_state
+            gr.update(value=""),       # place_query
+            gr.update(value=""),       # search_msg
         )
-    
-    fab_btn.click(fn=open_and_load_favs, outputs=[modal_overlay, modal_sheet, start_dt, end_dt, msg_output, favorites_dropdown])
-    close_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet])
-    cancel_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet])
-    
+
+    fab_btn.click(
+        fn=open_and_load_favs,
+        outputs=[modal_overlay, modal_sheet, body_class, start_dt, end_dt, msg_output, favorites_dropdown, place_results, selected_place_state, place_query, search_msg],
+    )
+
+    def close_modal():
+        body = "<script>document.body.classList.remove('modal-open');</script>"
+        return (gr.update(visible=False), gr.update(visible=False), body)
+
+    close_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet, body_class])
+    cancel_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet, body_class])
+
     # 즐겨찾기 추가
     def add_to_favorites(activity):
         activity = (activity or "").strip()
         if not activity:
-            return "⚠️ 활동명을 입력해 주세요", gr.update(choices=[], value=None)
+            return "⚠️ 활동명을 입력해 주세요", gr.update()
         db_add_favorite(activity)
         favs = db_list_favorites()
         return f"✅ '{activity}'를 즐겨찾기에 추가했습니다", gr.update(choices=favs, value=None)
-    
+
     add_fav_btn.click(fn=add_to_favorites, inputs=[activity_text], outputs=[fav_msg, favorites_dropdown])
-    
+
     # 즐겨찾기 선택 → 활동명에 반영
     def select_favorite(fav):
         return fav or ""
-    
+
     favorites_dropdown.change(fn=select_favorite, inputs=[favorites_dropdown], outputs=[activity_text])
-    
+
     # 장소 검색
     def search_and_store(query):
         cands, err = kakao_keyword_search(query, size=10)
         if err:
-            return cands, gr.update(choices=[], value=None), err, "{}"
+            return cands, gr.update(visible=True, choices=[], value=None), err, "{}"
         labels = [c["label"] for c in cands]
-        first_json = json.dumps(cands[0]) if cands else "{}"
-        return (cands, gr.update(choices=labels, value=None), f"✅ {len(cands)}개 검색됨", first_json)
-    
+        return (cands, gr.update(visible=True, choices=labels, value=None), f"✅ {len(cands)}개 검색됨", "{}")
+
     search_btn.click(fn=search_and_store, inputs=[place_query], outputs=[search_results_state, place_results, search_msg, selected_place_state])
-    
-    # 장소 선택 (Radio 클릭 시 즉시 선택)
+
+    # ✅ 장소 선택: 선택 즉시 "주소 입력칸에 고정" + "옵션 리스트 접기(숨김)"
     def update_selected(cands, label):
         if not label or not cands:
-            return "{}", ""
+            return "{}", "", gr.update(visible=True), gr.update()
         for c in cands:
             if c["label"] == label:
-                return json.dumps(c), f"✅ '{c['place']}' 선택됨"
-        return "{}", ""
-    
-    place_results.change(fn=update_selected, inputs=[search_results_state, place_results], outputs=[selected_place_state, search_msg])
-    
+                # place_query에는 선택된 label(사람이 보기 쉬움)을 고정
+                selected_json = json.dumps(c, ensure_ascii=False)
+                msg = f"✅ '{c['place']}' 선택됨"
+                # 옵션은 접는다(숨김)
+                return selected_json, msg, gr.update(visible=False), gr.update(value=label)
+        return "{}", "", gr.update(visible=True), gr.update()
+
+    place_results.change(
+        fn=update_selected,
+        inputs=[search_results_state, place_results],
+        outputs=[selected_place_state, search_msg, place_results, place_query],
+    )
+
     def create_and_close(activity_text, start_dt, end_dt, capacity_unlimited, cap_max, photo_np, selected_place_json):
         msg, home, mapv = create_event(activity_text, start_dt, end_dt, capacity_unlimited, cap_max, photo_np, selected_place_json)
         if msg.startswith("✅"):
-            return (msg, home, mapv, gr.update(visible=False), gr.update(visible=False))
+            body = "<script>document.body.classList.remove('modal-open');</script>"
+            return (msg, home, mapv, gr.update(visible=False), gr.update(visible=False), body)
         else:
-            return (msg, home, mapv, gr.update(visible=True), gr.update(visible=True))
-    
-    create_btn.click(fn=create_and_close, inputs=[activity_text, start_dt, end_dt, capacity_unlimited, cap_max, photo_np, selected_place_state], outputs=[msg_output, home_html, map_html, modal_overlay, modal_sheet])
+            body = "<script>document.body.classList.add('modal-open');</script>"
+            return (msg, home, mapv, gr.update(visible=True), gr.update(visible=True), body)
 
+    create_btn.click(
+        fn=create_and_close,
+        inputs=[activity_text, start_dt, end_dt, capacity_unlimited, cap_max, photo_np, selected_place_state],
+        outputs=[msg_output, home_html, map_html, modal_overlay, modal_sheet, body_class],
+    )
+
+# -------------------------
+# FastAPI
+# -------------------------
 app = FastAPI()
 
 @app.get("/")
@@ -598,14 +681,14 @@ def delete(space_id: str):
 def kakao_map():
     if not KAKAO_JAVASCRIPT_KEY:
         return HTMLResponse("<html><body><h3>KAKAO_JAVASCRIPT_KEY 필요</h3></body></html>")
-    
+
     points = map_points_payload()
     if points:
         center_lat = sum(p["lat"] for p in points) / len(points)
         center_lng = sum(p["lng"] for p in points) / len(points)
     else:
         center_lat, center_lng = 36.0190, 129.3435
-    
+
     html = f"""
 <!doctype html>
 <html>
