@@ -241,18 +241,15 @@ def parse_dt_any(v):
     s = str(v).strip()
     if not s:
         return None
-
     s = s.replace("/", "-")
     if " " in s and "T" not in s:
         s = s.replace(" ", "T")
-    if len(s) == 16:  # YYYY-MM-DDTHH:MM
+    if len(s) == 16:
         s = s + ":00"
-
     try:
         dt = datetime.fromisoformat(s)
     except:
         return None
-
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=KST)
     else:
@@ -260,7 +257,7 @@ def parse_dt_any(v):
     return dt
 
 # =====================
-# 홈/지도 렌더
+# 홈/지도
 # =====================
 def render_home():
     items = active_spaces()
@@ -283,8 +280,6 @@ def render_home():
     for s in items:
         period = fmt_period(s["start_iso"], s["end_iso"])
         cap = f"최대 {s['capacityMax']}명" if s.get("capacityEnabled") else "제한 없음"
-        detail = (s.get("address_detail") or "").strip()
-        detail_line = f"<div class='muted'>상세: {detail}</div>" if detail else ""
         photo_uri = b64_to_data_uri(s.get("photo_b64", ""))
         img = f"<img class='thumb' src='{photo_uri}' />" if photo_uri else "<div class='thumb placeholder'></div>"
 
@@ -295,7 +290,6 @@ def render_home():
               <div class="title">{s['title']}</div>
               <div class="period">{period}</div>
               <div class='muted'>{s['address']}</div>
-              {detail_line}
               <div class='muted'>{cap}</div>
               <div class="idline">ID: {s['id']}</div>
             </div>
@@ -304,7 +298,6 @@ def render_home():
           <a class="btn-del" href="/delete/{s['id']}">삭제</a>
         </div>
         """)
-
     return "\n".join(out)
 
 def map_points_payload():
@@ -316,10 +309,8 @@ def map_points_payload():
             "lat": s["lat"],
             "lng": s["lng"],
             "addr": s.get("address",""),
-            "detail": s.get("address_detail",""),
             "period": fmt_period(s.get("start_iso",""), s.get("end_iso","")),
             "id": s["id"],
-            # ✅ 이미지도 같이 넘김
             "photo_b64": s.get("photo_b64","") or ""
         })
     return points
@@ -388,15 +379,13 @@ def create_event(activity_text, start_txt, end_txt, capacity_unlimited, cap_max,
         return f"⚠️ 저장 실패: {str(e)}", render_home(), draw_map()
 
 # =====================
-# CSS + JS
+# CSS: ✅ FAB를 “Gradio 버튼” 그대로 fixed로 띄움 (JS 필요 없음)
 # =====================
 CSS = """
 :root{--bg:#FAF9F6;--ink:#1F2937;--muted:#6B7280;--line:#E5E3DD;--card:#ffffffcc;--danger:#ef4444;}
 *{box-sizing:border-box!important;}
 html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;margin:0;padding:0;}
-/* ✅ 웹 화면 가득 */
 .gradio-container{background:var(--bg)!important;max-width:none!important;width:100vw!important;margin:0!important;padding:0 16px 120px!important;}
-/* Gradio 내부 래퍼도 풀폭 */
 .gradio-container .wrap, .gradio-container .contain{max-width:none!important;width:100%!important;}
 
 .banner{margin:10px auto 6px;padding:10px 12px;border-radius:14px;font-size:13px;}
@@ -419,66 +408,55 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 .mapWrap{width:100%;margin:0;padding:0;}
 .mapFrame{width:100%;height:650px;border:0;border-radius:18px;max-width:980px;display:block;margin:0 auto;}
 
-/* ✅ 진짜 FAB (HTML 버튼) */
-#fab-floating{
-  position:fixed;
-  right:20px;
-  bottom:20px;
-  z-index:20000;
-  width:50px;height:50px;
-  border-radius:50%;
-  border:3px solid #ef4444;
-  background:#fff;
-  color:#111;
-  font-size:34px;
-  font-weight:700;
-  line-height:44px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  cursor:pointer;
-  box-shadow:0 6px 16px rgba(0,0,0,0.22);
+/* ✅ 여기부터 FAB 핵심 */
+/* elem_id는 wrapper div에 걸림 → wrapper를 fixed로 띄움 */
+#fab-btn{
+  position:fixed !important;
+  right:20px !important;
+  bottom:20px !important;
+  z-index:20000 !important;
+  width:50px !important;
+  height:50px !important;
+  padding:0 !important;
 }
-#fab-floating:hover{transform:scale(1.05);}
+/* 실제 버튼 스타일 */
+#fab-btn button{
+  width:50px !important;
+  height:50px !important;
+  min-width:50px !important;
+  min-height:50px !important;
+  border-radius:50% !important;
+  padding:0 !important;
 
-/* 모달 overlay */
+  border:3px solid #ef4444 !important;
+  background:#ffffff !important;
+  color:#111 !important;
+
+  font-size:34px !important;
+  font-weight:800 !important;
+  line-height:44px !important;
+
+  box-shadow:0 6px 16px rgba(0,0,0,0.22) !important;
+}
+#fab-btn button:hover{transform:scale(1.05) !important;}
+/* ✅ FAB 끝 */
+
 .modal-overlay{position:fixed!important;inset:0!important;background:rgba(0,0,0,0.5)!important;z-index:10000!important;backdrop-filter:blur(3px)!important;}
-
-/* ✅ 모달 시트: 세로 스크롤 1개만 + 바닥 여유 크게 (가림 방지) */
 .modal-sheet{
   position:fixed!important;left:50%!important;top:50%!important;transform:translate(-50%,-50%)!important;
   width:min(520px,92vw)!important;max-height:88vh!important;
   overflow-y:auto!important;overflow-x:hidden!important;
   background:#fff!important;border:1px solid var(--line)!important;border-radius:20px!important;
-  padding:18px 18px 200px 18px!important; /* ✅ footer + 즐겨찾기 대비 넉넉히 */
+  padding:18px 18px 200px 18px!important;
   z-index:10001!important;box-shadow:0 20px 40px rgba(0,0,0,0.15)!important;
 }
-
-/* 헤더 */
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:10px;border-bottom:2px solid var(--line);}
 .modal-title{font-size:18px;font-weight:900;color:var(--ink);}
-
-/* 사진 위젯 덮임 방지 */
 .photo-box{height:160px!important;overflow:hidden!important;border-radius:14px!important;}
 
-/* 즐겨찾기 2x5 */
-.fav-grid{
-  display:grid!important;
-  grid-template-columns:1fr 1fr!important;
-  gap:8px!important;
-  margin:8px 0 12px!important;
-}
-.fav-chip button{
-  width:100%!important;
-  border-radius:12px!important;
-  padding:10px 12px!important;
-  font-weight:800!important;
-  white-space:nowrap!important;
-  overflow:hidden!important;
-  text-overflow:ellipsis!important;
-}
+.fav-grid{display:grid!important;grid-template-columns:1fr 1fr!important;gap:8px!important;margin:8px 0 12px!important;}
+.fav-chip button{width:100%!important;border-radius:12px!important;padding:10px 12px!important;font-weight:900!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;}
 
-/* 모달 푸터 */
 .modal-footer{
   position:fixed!important;left:50%!important;bottom:0!important;transform:translateX(-50%)!important;
   width:min(520px,92vw)!important;display:flex!important;gap:10px!important;
@@ -495,46 +473,23 @@ html,body{width:100%;overflow-x:hidden!important;background:var(--bg)!important;
 }
 """
 
+# JS: datetime-local 강제(캘린더 클릭)
 JS_BOOT = """
-<script>
-(function(){
-  // datetime-local 적용
-  function toDatetimeLocal(inputId){
-    const el = document.getElementById(inputId);
-    if(!el) return;
-    const inp = el.querySelector("input");
-    if(!inp) return;
-    inp.type = "datetime-local";
-    inp.step = "60";
+function apply(){
+  const a = document.getElementById("start_dt_box");
+  const b = document.getElementById("end_dt_box");
+  if(a){
+    const i=a.querySelector("input");
+    if(i){ i.type="datetime-local"; i.step="60"; }
   }
-  function applyAll(){
-    toDatetimeLocal("start_dt_box");
-    toDatetimeLocal("end_dt_box");
+  if(b){
+    const i=b.querySelector("input");
+    if(i){ i.type="datetime-local"; i.step="60"; }
   }
-  window.addEventListener("load", ()=>{ applyAll(); setTimeout(applyAll, 400); setTimeout(applyAll, 1200); });
-
-  // FAB 생성 + hidden 버튼 클릭 연결
-  function ensureFab(){
-    if(document.getElementById("fab-floating")) return;
-    const b = document.createElement("button");
-    b.id = "fab-floating";
-    b.innerText = "+";
-    b.title = "새 공간 열기";
-    b.addEventListener("click", ()=>{
-      // gradio hidden btn click
-      const hb = document.getElementById("fab-hidden");
-      if(hb) hb.click();
-    });
-    document.body.appendChild(b);
-  }
-
-  window.addEventListener("load", ()=>{ ensureFab(); });
-  // gradio 리렌더 대비
-  setInterval(()=>{ ensureFab(); }, 1200);
-
-  window.__oseyo_apply_datetime_local = applyAll;
-})();
-</script>
+}
+apply();
+setTimeout(apply, 300);
+setTimeout(apply, 1200);
 """
 
 # =====================
@@ -543,8 +498,6 @@ JS_BOOT = """
 with gr.Blocks(css=CSS, title="Oseyo") as demo:
     search_results_state = gr.State([])
     selected_place_state = gr.Textbox(visible=False, value="{}")
-
-    body_script = gr.HTML(JS_BOOT + "<script>if(window.__oseyo_apply_datetime_local){window.__oseyo_apply_datetime_local();}</script>")
 
     gr.Markdown("# 지금, 열려 있습니다\n원하시면 오세요")
 
@@ -556,8 +509,8 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
             map_html = gr.HTML()
             map_refresh_btn = gr.Button("🔄 지도 새로고침", size="sm")
 
-    # ✅ 진짜 FAB는 HTML이 담당. 이 버튼은 숨겨서 트리거 역할만 함.
-    fab_hidden = gr.Button("open", elem_id="fab-hidden", visible=False)
+    # ✅ FAB 버튼 (Render에서 무조건 보임)
+    fab_btn = gr.Button("+", elem_id="fab-btn")
 
     modal_overlay = gr.HTML("<div></div>", visible=False, elem_classes=["modal-overlay"])
 
@@ -572,12 +525,9 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
 
         fav_msg = gr.Markdown("")
 
-        # ✅ 즐겨찾기 2x5 고정 버튼(최대 10개)
-        gr.Markdown("⭐ 즐겨찾기")
+        gr.Markdown("⭐ 즐겨찾기 (2×5)")
         with gr.Column(elem_classes=["fav-grid"]):
-            fav_buttons = []
-            for i in range(10):
-                fav_buttons.append(gr.Button("", visible=False, elem_classes=["fav-chip"]))
+            fav_buttons = [gr.Button("", visible=False, elem_classes=["fav-chip"]) for _ in range(10)]
 
         photo_np = gr.Image(label="📸 사진", type="numpy", height=160, elem_classes=["photo-box"])
 
@@ -601,14 +551,12 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
             cancel_btn = gr.Button("취소", variant="secondary")
             create_btn = gr.Button("✅ 생성", variant="primary")
 
-    # 초기 로드
-    demo.load(fn=render_home, outputs=home_html)
+    # 로드
+    demo.load(fn=render_home, outputs=home_html, js=JS_BOOT)
     demo.load(fn=draw_map, outputs=map_html)
-
     refresh_btn.click(fn=render_home, outputs=home_html)
     map_refresh_btn.click(fn=draw_map, outputs=map_html)
 
-    # 즐겨찾기 버튼 10개 업데이트
     def build_fav_updates(favs):
         favs = favs[:10]
         ups = []
@@ -628,34 +576,32 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
         favs = db_list_favorites()
         fav_ups = build_fav_updates(favs)
 
-        body = "<script>if(window.__oseyo_apply_datetime_local){window.__oseyo_apply_datetime_local();}</script>"
         return (
             gr.update(visible=True),
             gr.update(visible=True),
-            body,
             st_s,
             en_s,
             "",
-            gr.update(visible=True, choices=[], value=None),  # 검색결과 초기화
+            gr.update(visible=True, choices=[], value=None),
             gr.update(value="{}"),
             gr.update(value=""),
             gr.update(value=""),
             *fav_ups
         )
 
-    fab_hidden.click(
+    fab_btn.click(
         fn=open_modal_and_load,
-        outputs=[modal_overlay, modal_sheet, body_script, start_txt, end_txt, msg_output, place_results,
-                 selected_place_state, place_query, search_msg, *fav_buttons]
+        outputs=[modal_overlay, modal_sheet, start_txt, end_txt, msg_output, place_results,
+                 selected_place_state, place_query, search_msg, *fav_buttons],
+        js=JS_BOOT
     )
 
     def close_modal():
-        return (gr.update(visible=False), gr.update(visible=False), "")
+        return (gr.update(visible=False), gr.update(visible=False))
 
-    close_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet, body_script])
-    cancel_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet, body_script])
+    close_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet])
+    cancel_btn.click(fn=close_modal, outputs=[modal_overlay, modal_sheet])
 
-    # 즐겨찾기 추가
     def add_to_favorites(activity):
         activity = (activity or "").strip()
         if not activity:
@@ -667,13 +613,11 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
 
     add_fav_btn.click(fn=add_to_favorites, inputs=[activity_text], outputs=[fav_msg, *fav_buttons])
 
-    # ✅ 즐겨찾기 버튼 클릭 → 활동명에 반영
     def choose_fav(v):
         return v or ""
     for b in fav_buttons:
         b.click(fn=choose_fav, inputs=[b], outputs=[activity_text])
 
-    # 장소 검색
     def search_and_store(query):
         cands, err = kakao_keyword_search(query, size=10)
         if err:
@@ -683,7 +627,6 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
 
     search_btn.click(fn=search_and_store, inputs=[place_query], outputs=[search_results_state, place_results, search_msg, selected_place_state])
 
-    # ✅ 장소 선택: 입력창에 고정 + 옵션 접기(숨김)
     def update_selected(cands, label):
         if not label or not cands:
             return "{}", "", gr.update(visible=True), gr.update()
@@ -700,13 +643,16 @@ with gr.Blocks(css=CSS, title="Oseyo") as demo:
     def create_and_close(activity_text, start_txt, end_txt, capacity_unlimited, cap_max, photo_np, selected_place_json):
         msg, home, mapv = create_event(activity_text, start_txt, end_txt, capacity_unlimited, cap_max, photo_np, selected_place_json)
         if msg.startswith("✅"):
-            return (msg, home, mapv, gr.update(visible=False), gr.update(visible=False), "")
+            return (msg, home, mapv, gr.update(visible=False), gr.update(visible=False))
         else:
-            return (msg, home, mapv, gr.update(visible=True), gr.update(visible=True), "")
+            return (msg, home, mapv, gr.update(visible=True), gr.update(visible=True))
 
-    create_btn.click(fn=create_and_close,
-                     inputs=[activity_text, start_txt, end_txt, capacity_unlimited, cap_max, photo_np, selected_place_state],
-                     outputs=[msg_output, home_html, map_html, modal_overlay, modal_sheet, body_script])
+    create_btn.click(
+        fn=create_and_close,
+        inputs=[activity_text, start_txt, end_txt, capacity_unlimited, cap_max, photo_np, selected_place_state],
+        outputs=[msg_output, home_html, map_html, modal_overlay, modal_sheet],
+        js=JS_BOOT
+    )
 
 # =====================
 # FastAPI + Kakao Map
@@ -745,7 +691,7 @@ html,body{{margin:0;height:100%;}}
 .custom-info{{padding:10px;font-family:system-ui;font-size:12px;line-height:1.4;min-width:200px;}}
 .info-title{{font-weight:900;margin-bottom:6px;font-size:13px;}}
 .info-text{{color:#6B7280;margin:2px 0;font-size:11px;}}
-.info-img{{width:100%;height:120px;object-fit:cover;border-radius:10px;margin:6px 0 6px;border:1px solid #eee;}}
+.info-img{{width:100%;height:120px;object-fit:cover;border-radius:10px;margin:6px 0;border:1px solid #eee;}}
 </style>
 <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
 </head>
@@ -754,7 +700,6 @@ html,body{{margin:0;height:100%;}}
 <script>
 const map=new kakao.maps.Map(document.getElementById('map'),{{center:new kakao.maps.LatLng({center_lat},{center_lng}),level:6}});
 const points={json.dumps(points,ensure_ascii=False)};
-
 const bounds=new kakao.maps.LatLngBounds();
 let activeIW = new kakao.maps.InfoWindow({{removable:true}});
 
@@ -769,17 +714,12 @@ if(points.length===0){{
   points.forEach(p=>{{
     const pos=new kakao.maps.LatLng(p.lat,p.lng);
     bounds.extend(pos);
-
     const marker=new kakao.maps.Marker({{position:pos,map:map}});
-
     kakao.maps.event.addListener(marker,'click',function(){{
-      // ✅ 한 번에 하나만 열리게: 기존 닫고 새로 열기
       activeIW.close();
-
       const img = (p.photo_b64 && p.photo_b64.length>0)
         ? `<img class="info-img" src="data:image/jpeg;base64,${{p.photo_b64}}"/>`
         : "";
-
       const content = `
         <div class="custom-info">
           <div class="info-title">${{escHtml(p.title)}}</div>
@@ -801,7 +741,6 @@ if(points.length===0){{
 """
     return HTMLResponse(html)
 
-# ✅ 루트(/)에 마운트
 app = gr.mount_gradio_app(app, demo, path="/")
 
 if __name__ == "__main__":
