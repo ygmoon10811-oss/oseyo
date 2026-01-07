@@ -220,7 +220,7 @@ html, body { margin: 0 !important; padding: 0 !important; overflow-x: hidden !im
   border: 1px solid #ddd;
 }
 
-/* ✅ 이벤트명 입력창이 길어져도 이미지 영역 가리지 않도록: 높이 제한 + 내부 스크롤 */
+/* ✅ 이벤트명 입력창이 길어져도 아래 영역 가리지 않도록: 높이 제한 + 내부 스크롤 */
 #event_title textarea {
   max-height: 120px !important;
   overflow-y: auto !important;
@@ -228,6 +228,15 @@ html, body { margin: 0 !important; padding: 0 !important; overflow-x: hidden !im
   line-height: 1.4 !important;
 }
 #event_title { flex: 0 0 auto !important; }
+
+/* ✅ 즐겨찾기 추가/갱신 리렌더링 때 이미지 업로드 영역이 접히는 현상 방지 */
+#event_photo {
+  flex: 0 0 auto !important;
+  min-height: 240px !important;  /* 이 높이는 무조건 확보 */
+  display: block !important;
+}
+#event_photo > * { min-height: 240px !important; }
+#event_photo * { box-sizing: border-box !important; }
 """
 
 
@@ -317,6 +326,15 @@ def save_data(title, img, start, end, addr_obj):
     return "✅ 이벤트가 생성되었습니다"
 
 
+def top10_favs_updates():
+    with db_conn() as con:
+        rows = con.execute("SELECT name FROM favs ORDER BY count DESC LIMIT 10").fetchall()
+    updates = [gr.update(visible=False, value="")] * 10
+    for i, r in enumerate(rows):
+        updates[i] = gr.update(visible=True, value=r[0])
+    return updates
+
+
 # -----------------------------
 # 4) Gradio UI
 # -----------------------------
@@ -359,6 +377,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
                     max_lines=4,
                 )
                 add_fav_btn = gr.Button("⭐", scale=1, size="sm")
+                manage_fav_btn = gr.Button("🗑", scale=1, size="sm")
 
             fav_msg = gr.Markdown("")
 
@@ -366,7 +385,13 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             with gr.Column(elem_classes=["fav-grid"]):
                 f_btns = [gr.Button("", visible=False, size="sm") for _ in range(10)]
 
-            img_in = gr.Image(label="📸 사진 (선택)", type="numpy", height=150)
+            # ✅ 이미지 업로드: 리렌더링에도 접히지 않도록 elem_id 부여
+            img_in = gr.Image(
+                label="📸 사진 (선택)",
+                type="numpy",
+                height=180,
+                elem_id="event_photo",
+            )
 
             with gr.Row():
                 s_in = gr.Textbox(
@@ -400,20 +425,24 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
                 s_close = gr.Button("뒤로", variant="secondary")
                 s_final = gr.Button("✅ 확정", variant="primary")
 
+    # 서브 모달 (즐겨찾기 관리/삭제)
+    with gr.Column(visible=False, elem_classes=["sub-modal"]) as modal_f:
+        with gr.Column(elem_classes=["sub-body"]):
+            gr.Markdown("### ⭐ 즐겨찾기 관리")
+            fav_list = gr.Radio(label="즐겨찾기 목록", choices=[], interactive=True)
+            with gr.Row():
+                f_close = gr.Button("닫기", variant="secondary")
+                f_del = gr.Button("선택 삭제", variant="primary")
+            fav_del_msg = gr.Markdown("")
+
     # ------- 핸들러 -------
 
     # 새로고침
     refresh_btn.click(fn=get_list_html, outputs=explore_html)
 
-    # FAB 클릭
+    # FAB 클릭 -> 모달 열고 즐겨찾기 10개 갱신
     def open_m():
-        with db_conn() as con:
-            rows = con.execute("SELECT name FROM favs ORDER BY count DESC LIMIT 10").fetchall()
-
-        updates = [gr.update(visible=False, value="")] * 10
-        for i, r in enumerate(rows):
-            updates[i] = gr.update(visible=True, value=r[0])
-
+        updates = top10_favs_updates()
         return [gr.update(visible=True), gr.update(visible=True)] + updates
 
     fab.click(open_m, None, [overlay, modal_m, *f_btns])
@@ -439,18 +468,14 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
                 (title,),
             )
             con.commit()
-            rows = con.execute("SELECT name FROM favs ORDER BY count DESC LIMIT 10").fetchall()
 
-        updates = [gr.update(visible=False, value="")] * 10
-        for i, r in enumerate(rows):
-            updates[i] = gr.update(visible=True, value=r[0])
-
+        updates = top10_favs_updates()
         msg = f"✅ '{title}'를 즐겨찾기에 추가했습니다"
         return [msg] + updates
 
     add_fav_btn.click(add_fav, t_in, [fav_msg] + f_btns)
 
-    # 즐겨찾기 버튼 클릭
+    # 즐겨찾기 버튼 클릭 -> 이벤트명 채우기
     for b in f_btns:
         b.click(lambda x: x, b, t_in)
 
@@ -502,6 +527,43 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
         return item["label"], item, gr.update(visible=False)
 
     s_final.click(confirm_k, [q_res, search_state], [addr_v, selected_addr, modal_s])
+
+    # 즐겨찾기 관리 모달 열기
+    def load_favs():
+        with db_conn() as con:
+            rows = con.execute("SELECT name FROM favs ORDER BY count DESC LIMIT 50").fetchall()
+        names = [r[0] for r in rows]
+        return gr.update(choices=names, value=None), gr.update(visible=True), ""
+
+    manage_fav_btn.click(load_favs, None, [fav_list, modal_f, fav_del_msg])
+    f_close.click(lambda: gr.update(visible=False), None, modal_f)
+
+    # 즐겨찾기 삭제
+    def delete_fav(sel):
+        sel = (sel or "").strip()
+        if not sel:
+            # 목록/버튼 갱신은 안 함
+            msg = "⚠️ 삭제할 즐겨찾기를 선택해 주세요"
+            keep_list = gr.update()
+            keep_btns = [gr.update()] * 10
+            return [msg, keep_list] + keep_btns
+
+        with db_conn() as con:
+            con.execute("DELETE FROM favs WHERE name = ?", (sel,))
+            con.commit()
+
+        # 관리 모달 목록 갱신
+        with db_conn() as con:
+            rows50 = con.execute("SELECT name FROM favs ORDER BY count DESC LIMIT 50").fetchall()
+        names50 = [r[0] for r in rows50]
+
+        # 메인 모달 상단 10개 버튼 갱신
+        updates = top10_favs_updates()
+
+        msg = f"✅ '{sel}' 즐겨찾기를 삭제했습니다"
+        return [msg, gr.update(choices=names50, value=None)] + updates
+
+    f_del.click(delete_fav, fav_list, [fav_del_msg, fav_list, *f_btns])
 
     # 저장
     def save_and_close(title, img, start, end, addr):
