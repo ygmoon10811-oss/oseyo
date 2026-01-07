@@ -79,6 +79,18 @@ def db_conn():
 # 1) DB 스키마
 # =============================================================================
 with db_conn() as con:
+    def migrate_events_table():
+    with db_conn() as con:
+        cols = [r[1] for r in con.execute("PRAGMA table_info(events)").fetchall()]
+        # 구버전(9컬럼) -> 신버전(11컬럼)으로 확장
+        if "owner_user_id" not in cols:
+            con.execute("ALTER TABLE events ADD COLUMN owner_user_id TEXT DEFAULT ''")
+        if "max_people" not in cols:
+            con.execute("ALTER TABLE events ADD COLUMN max_people INTEGER DEFAULT 10")
+        con.commit()
+
+migrate_events_table()
+
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -1376,21 +1388,26 @@ def save_event(owner_user_id: str, title, img, start, end, addr_obj, max_people)
     eid = uuid.uuid4().hex[:10]
     with db_conn() as con:
         con.execute(
-            "INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                eid,
-                owner_user_id,
-                title,
-                pic_b64,
-                start,
-                end,
-                addr_name,
-                lat,
-                lng,
-                max_people,
-                now_kst().strftime("%Y-%m-%d %H:%M:%S"),
-            ),
-        )
+    """
+    INSERT INTO events
+    (id, owner_user_id, title, photo, start, end, addr, lat, lng, max_people, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """,
+    (
+        eid,
+        owner_user_id,
+        title,
+        pic_b64,
+        start,
+        end,
+        addr_name,
+        lat,
+        lng,
+        max_people,
+        now_kst().strftime("%Y-%m-%d %H:%M:%S"),
+    ),
+)
+
         con.execute(
             "INSERT INTO favs (name, count) VALUES (?, 1) "
             "ON CONFLICT(name) DO UPDATE SET count = count + 1",
@@ -1650,3 +1667,4 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =============================================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
