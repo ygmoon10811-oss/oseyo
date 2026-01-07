@@ -89,19 +89,37 @@ html, body { margin: 0 !important; padding: 0 !important; overflow-x: hidden !im
 /* 메인 모달 */
 .main-modal {
   position: fixed !important; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 92vw; max-width: 500px; max-height: 88vh;
+  width: 92vw; max-width: 500px; height: 86vh;
   background: white; z-index: 10001; border-radius: 24px;
   box-shadow: 0 20px 60px rgba(0,0,0,0.4);
   display: flex; flex-direction: column; overflow: hidden;
 }
-.modal-header { padding: 20px; border-bottom: 2px solid #eee; font-weight: 800; font-size: 20px; }
-.modal-body {
-  flex: 1; overflow-y: auto; padding: 20px;
-  display: flex; flex-direction: column; gap: 16px;
+.modal-header { 
+  padding: 20px; border-bottom: 2px solid #eee; 
+  font-weight: 800; font-size: 20px; 
+  flex-shrink: 0;
 }
+.modal-body {
+  flex: 1; 
+  overflow-y: auto; 
+  overflow-x: hidden;
+  padding: 20px;
+  display: flex; 
+  flex-direction: column; 
+  gap: 16px;
+}
+.modal-body::-webkit-scrollbar { width: 8px; }
+.modal-body::-webkit-scrollbar-track { background: #f1f1f1; }
+.modal-body::-webkit-scrollbar-thumb { background: #ccc; border-radius: 4px; }
+.modal-body::-webkit-scrollbar-thumb:hover { background: #999; }
+
 .modal-footer {
-  padding: 16px 20px; border-top: 2px solid #eee; background: #f9f9f9;
-  display: flex; gap: 10px;
+  padding: 16px 20px; 
+  border-top: 2px solid #eee; 
+  background: #f9f9f9;
+  display: flex; 
+  gap: 10px;
+  flex-shrink: 0;
 }
 .modal-footer button { flex: 1; padding: 12px; border-radius: 12px; font-weight: 700; }
 
@@ -116,8 +134,21 @@ html, body { margin: 0 !important; padding: 0 !important; overflow-x: hidden !im
 .sub-body { height: 100%; overflow-y: auto; padding: 20px; }
 
 /* 즐겨찾기 그리드 */
-.fav-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.fav-grid button { font-size: 13px; padding: 10px 8px; border-radius: 10px; }
+.fav-grid { 
+  display: grid; 
+  grid-template-columns: 1fr 1fr; 
+  gap: 8px; 
+  max-height: none;
+  overflow: visible;
+}
+.fav-grid button { 
+  font-size: 13px; 
+  padding: 10px 8px; 
+  border-radius: 10px; 
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* 이벤트 카드 */
 .event-card {
@@ -312,7 +343,9 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     def add_fav(title):
         title = (title or "").strip()
         if not title:
-            return "⚠️ 이벤트명을 입력해 주세요", [gr.update()] * 10
+            msg = "⚠️ 이벤트명을 입력해 주세요"
+            updates = [gr.update()] * 10
+            return [msg] + updates
         
         with db_conn() as con:
             con.execute(
@@ -326,9 +359,10 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
         for i, r in enumerate(rows):
             updates[i] = gr.update(visible=True, value=r[0])
         
-        return f"✅ '{title}'를 즐겨찾기에 추가했습니다", updates
+        msg = f"✅ '{title}'를 즐겨찾기에 추가했습니다"
+        return [msg] + updates
 
-    add_fav_btn.click(add_fav, t_in, [fav_msg, *f_btns])
+    add_fav_btn.click(add_fav, t_in, [fav_msg] + f_btns)
 
     # 즐겨찾기 버튼 클릭
     for b in f_btns:
