@@ -175,6 +175,26 @@ html, body { margin: 0 !important; padding: 0 !important; overflow-x: hidden !im
   width: 120px; height: 120px; object-fit: cover;
   border-radius: 12px; border: 1px solid #ddd;
 }
+/* 모달 바디 내부 요소들이 압축되지 않도록 설정 */
+.modal-body > div {
+    flex-shrink: 0 !important;
+}
+
+/* 이벤트명 입력창이 일정 높이 이상 커지지 않게 제한 */
+.modal-body .gradio-textbox textarea {
+    max-height: 80px !important;
+}
+
+/* 즐겨찾기 그리드와 이미지 영역 사이의 간격 유지 */
+.fav-grid {
+    margin-bottom: 10px;
+}
+
+/* 이미지 입력창이 항상 보이도록 설정 */
+.modal-body .gradio-image {
+    margin-top: 5px;
+    border: 1px dashed #ccc;
+}
 """
 
 # -----------------------------
@@ -542,4 +562,5 @@ app = gr.mount_gradio_app(app, demo, path="/")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
