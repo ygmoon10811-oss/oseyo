@@ -82,7 +82,6 @@ with db_conn() as con:
     def migrate_events_table():
     with db_conn() as con:
         cols = [r[1] for r in con.execute("PRAGMA table_info(events)").fetchall()]
-        # 구버전(9컬럼) -> 신버전(11컬럼)으로 확장
         if "owner_user_id" not in cols:
             con.execute("ALTER TABLE events ADD COLUMN owner_user_id TEXT DEFAULT ''")
         if "max_people" not in cols:
@@ -90,6 +89,7 @@ with db_conn() as con:
         con.commit()
 
 migrate_events_table()
+
 
     con.execute(
         """
@@ -1667,4 +1667,5 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =============================================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
