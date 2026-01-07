@@ -67,20 +67,32 @@ CSS = """
 html, body { margin: 0 !important; padding: 0 !important; overflow-x: hidden !important; }
 .gradio-container { max-width: 100% !important; padding-bottom: 100px !important; }
 
-/* FAB 버튼 - 작은 원형 */
-.fab-wrapper { position: fixed !important; right: 20px; bottom: 20px; z-index: 999; width: 0; height: 0; }
+/* FAB 버튼 - 오른쪽 하단에 안정적으로 고정 */
+.fab-wrapper { 
+  position: fixed !important; 
+  right: 30px !important;    /* 오른쪽 여유 공간 확보 */
+  bottom: 30px !important;   /* 하단 여유 공간 확보 */
+  z-index: 9999 !important;  /* 다른 요소보다 항상 위에 위치 */
+  width: auto !important;    /* 0에서 auto로 변경 */
+  height: auto !important;   /* 0에서 auto로 변경 */
+}
+
 .fab-wrapper button {
-  width: 56px !important; height: 56px !important;
-  min-width: 56px !important; min-height: 56px !important;
+  width: 65px !important;    /* 크기를 살짝 키워 터치/클릭이 쉽게 변경 */
+  height: 65px !important;
+  min-width: 65px !important; 
+  min-height: 65px !important;
   border-radius: 50% !important;
   background: #ff6b00 !important;
   color: white !important;
-  font-size: 32px !important;
+  font-size: 40px !important; /* + 기호 크기 조정 */
   border: none !important;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
-  padding: 0 !important;
-  line-height: 56px !important;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important; /* 그림자 강화로 입체감 부여 */
   cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
 }
 
 /* 오버레이 */
@@ -530,3 +542,4 @@ app = gr.mount_gradio_app(app, demo, path="/")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
