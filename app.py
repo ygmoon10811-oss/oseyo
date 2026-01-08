@@ -571,7 +571,12 @@ def delete_my_event(event_id, request: gr.Request):
 
 
 # =========================================================
-# 6) Gradio UI
+# 6) FastAPI 먼저 초기화
+# =========================================================
+app = FastAPI()
+
+# =========================================================
+# 7) Gradio UI
 # =========================================================
 now_dt = now_kst()
 later_dt = now_dt + timedelta(hours=2)
@@ -703,18 +708,23 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
 
 # =========================================================
-# 7) FastAPI + 로그인
+# 8) FastAPI 라우트 및 인증
 # =========================================================
-app = FastAPI()
 
 PUBLIC_PATHS = {"/", "/login", "/signup", "/logout", "/health", "/map", "/verify-phone", "/check-verification"}
 
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path or "/"
-    if path.startswith("/static") or path.startswith("/assets") or path in PUBLIC_PATHS:
+    
+    # 정적 파일과 public 경로는 인증 제외
+    if (path.startswith("/static") or 
+        path.startswith("/assets") or 
+        path.startswith("/file=") or
+        path in PUBLIC_PATHS):
         return await call_next(request)
     
+    # /app 경로는 인증 필요
     if path.startswith("/app"):
         token = request.cookies.get(COOKIE_NAME)
         if not get_user_by_token(token):
@@ -723,14 +733,14 @@ async def auth_guard(request: Request, call_next):
     return await call_next(request)
 
 @app.get("/")
-def root(request: Request):
+async def root(request: Request):
     token = request.cookies.get(COOKIE_NAME)
     if get_user_by_token(token):
         return RedirectResponse("/app", status_code=303)
     return RedirectResponse("/login", status_code=303)
 
-@app.get("/login")
-def login_page():
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
     html_content = f"""
 <!doctype html>
 <html>
