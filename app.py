@@ -210,6 +210,15 @@ def set_test_cookie():
     )
     return resp
 
+from fastapi import Request
+from fastapi.responses import RedirectResponse
+
+app = FastAPI()
+
+PUBLIC_PATHS = {
+    "/login", "/signup", "/logout", "/whoami", "/health",
+    "/debug_db", "/debug_cookie", "/set_test_cookie", "/login_debug",
+}
 
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
@@ -415,6 +424,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
 
 
