@@ -147,6 +147,36 @@ def set_auth_cookie(resp, token: str):
 # =========================================================
 app = FastAPI()
 
+@app.get("/debug_cookie")
+def debug_cookie(request: Request):
+    # 서버가 실제로 받은 Cookie 헤더/파싱 결과를 그대로 보여줌
+    return {
+        "raw_cookie_header": request.headers.get("cookie"),
+        "parsed_cookies": dict(request.cookies),
+        "cookie_name": COOKIE_NAME,
+        "cookie_value": request.cookies.get(COOKIE_NAME),
+    }
+
+
+@app.get("/set_test_cookie")
+def set_test_cookie():
+    # 로그인 로직 없이, 쿠키가 저장/전송 되는지부터 테스트
+    resp = HTMLResponse(
+        "<h3>test cookie set</h3><a href='/debug_cookie'>go debug_cookie</a>",
+        status_code=200,
+    )
+    resp.set_cookie(
+        key=COOKIE_NAME,
+        value="TESTTOKEN123",
+        httponly=True,
+        samesite="lax",
+        path="/",
+        secure=False,
+        max_age=3600,
+    )
+    return resp
+
+
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
@@ -322,6 +352,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
 
 
