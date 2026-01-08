@@ -153,17 +153,24 @@ def get_user_by_token(token: str):
         return {"id": u[0], "username": u[1]}
 
 
-def set_auth_cookie(resp, token: str):
+def set_auth_cookie(resp, token: str, request: Request | None = None):
+    # Render는 프록시 뒤에 있어서 실제 https 여부는 헤더로 판단
+    is_https = False
+    if request is not None:
+        proto = request.headers.get("x-forwarded-proto", "")
+        is_https = (proto == "https")
+
     resp.set_cookie(
         key=COOKIE_NAME,
         value=token,
         httponly=True,
         samesite="lax",
         path="/",
-        secure=False,  # Render(https)만 쓸거면 True로 바꿔도 됨
+        secure=is_https,          # ✅ https면 Secure 켬
         max_age=SESSION_HOURS * 3600,
     )
     return resp
+
 
 
 # -----------------------------
@@ -731,7 +738,7 @@ def login_page():
 
 
 @app.post("/login")
-def login(username: str = Form(...), password: str = Form(...)):
+def login(request: Request, username: str = Form(...), password: str = Form(...)):
     username = (username or "").strip()
     with db_conn() as con:
         row = con.execute("SELECT id, pw_hash FROM users WHERE username=?", (username,)).fetchone()
@@ -741,7 +748,8 @@ def login(username: str = Form(...), password: str = Form(...)):
 
     token = new_session(row[0])
     resp = RedirectResponse("/app", status_code=303)
-    return set_auth_cookie(resp, token)
+    return set_auth_cookie(resp, token, request=request)
+
 
 
 @app.get("/signup")
@@ -781,25 +789,11 @@ def signup_page():
 
 
 @app.post("/signup")
-def signup(username: str = Form(...), password: str = Form(...)):
-    username = (username or "").strip()
-    if not username or not password:
-        return RedirectResponse("/signup", status_code=303)
-
-    uid = uuid.uuid4().hex
-    try:
-        with db_conn() as con:
-            con.execute(
-                "INSERT INTO users VALUES (?,?,?,?)",
-                (uid, username, make_pw_hash(password), now_kst().isoformat()),
-            )
-            con.commit()
-    except sqlite3.IntegrityError:
-        return RedirectResponse("/signup", status_code=303)
-
-    token = new_session(uid)
+def signup(request: Request, username: str = Form(...), password: str = Form(...)):
+    ...
     resp = RedirectResponse("/app", status_code=303)
-    return set_auth_cookie(resp, token)
+    return set_auth_cookie(resp, token, request=request)
+
 
 
 @app.get("/logout")
@@ -916,3 +910,4 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
