@@ -94,7 +94,7 @@ def init_db():
         except Exception:
             pass
 
-        # 즐겨찾기
+        # 즐겨찾기 (전역 TOP10 기반)
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS favs (
@@ -230,7 +230,6 @@ def normalize_email(e: str) -> str:
     return (e or "").strip().lower()
 
 def valid_email(e: str) -> bool:
-    # 너무 엄격하게 안 함(현실적으로 통과율 높게)
     return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", e or ""))
 
 def otp_hash(code: str) -> str:
@@ -450,6 +449,11 @@ button.selected {
 # =========================================================
 # 5) 이벤트/즐겨찾기 로직
 # =========================================================
+def map_iframe_html() -> str:
+    # iframe 캐시 방지(이벤트 생성/삭제 직후 자동 갱신용)
+    ts = int(now_kst().timestamp())
+    return f'<iframe id="map_iframe" src="/map?ts={ts}" style="width:100%;height:70vh;border:none;border-radius:16px;"></iframe>'
+
 def get_list_html():
     with db_conn() as con:
         rows = con.execute(
@@ -579,6 +583,19 @@ def get_top_favs(limit=10):
         ).fetchall()
     return [{"name": r[0], "count": r[1]} for r in rows]
 
+def get_fav_names(limit=50):
+    with db_conn() as con:
+        rows = con.execute(
+            """
+            SELECT name FROM favs
+            WHERE name IS NOT NULL AND TRIM(name) != ''
+            ORDER BY count DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
 def fav_buttons_update(favs):
     updates = []
     for i in range(10):
@@ -592,12 +609,14 @@ def add_fav_only(name: str, request: gr.Request):
     user = get_current_user(request)
     if not user:
         favs = get_top_favs(10)
-        return "로그인이 필요합니다.", *fav_buttons_update(favs)
+        names = get_fav_names(50)
+        return "로그인이 필요합니다.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
 
     name = (name or "").strip()
     if not name:
         favs = get_top_favs(10)
-        return "활동명을 입력해 주세요.", *fav_buttons_update(favs)
+        names = get_fav_names(50)
+        return "활동명을 입력해 주세요.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
 
     with db_conn() as con:
         con.execute(
@@ -610,7 +629,29 @@ def add_fav_only(name: str, request: gr.Request):
         con.commit()
 
     favs = get_top_favs(10)
-    return "✅ 즐겨찾기에 추가되었습니다.", *fav_buttons_update(favs)
+    names = get_fav_names(50)
+    return "✅ 즐겨찾기에 추가되었습니다.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
+
+def delete_fav(name: str, request: gr.Request):
+    user = get_current_user(request)
+    if not user:
+        favs = get_top_favs(10)
+        names = get_fav_names(50)
+        return "로그인이 필요합니다.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
+
+    name = (name or "").strip()
+    if not name:
+        favs = get_top_favs(10)
+        names = get_fav_names(50)
+        return "삭제할 즐겨찾기를 선택해 주세요.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
+
+    with db_conn() as con:
+        con.execute("DELETE FROM favs WHERE name = ?", (name,))
+        con.commit()
+
+    favs = get_top_favs(10)
+    names = get_fav_names(50)
+    return "✅ 즐겨찾기를 삭제했습니다.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
 
 
 # =========================================================
@@ -635,7 +676,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             explore_html = gr.HTML()
             refresh_btn = gr.Button("🔄 목록 새로고침", variant="secondary", size="sm")
         with gr.Tab("지도"):
-            gr.HTML('<iframe id="map_iframe" src="/map" style="width:100%;height:70vh;border:none;border-radius:16px;"></iframe>')
+            map_html = gr.HTML(map_iframe_html())
 
     with gr.Row(elem_classes=["fab-wrapper"]):
         fab = gr.Button("+")
@@ -659,6 +700,17 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
                     fav_new = gr.Textbox(label="즐겨찾기 추가", placeholder="예: 30분 산책", lines=1)
                     fav_add_btn = gr.Button("추가", variant="secondary")
                 fav_msg = gr.Markdown("")
+
+                # ✅ 즐겨찾기 삭제 UI 추가
+                with gr.Row():
+                    fav_del_dd = gr.Dropdown(
+                        label="즐겨찾기 삭제",
+                        choices=[],
+                        value=None,
+                        interactive=True,
+                    )
+                    fav_del_btn = gr.Button("삭제", variant="stop")
+
                 gr.Markdown("---")
 
                 t_in = gr.Textbox(label="이벤트명", placeholder="예: 30분 산책, 조용히 책 읽기", lines=1)
@@ -699,19 +751,21 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     def open_main_modal(request: gr.Request):
         my_events = get_my_events(request)
         favs = get_top_favs(10)
+        fav_names = get_fav_names(50)
         return (
             gr.update(visible=True),
             gr.update(visible=True),
             gr.update(choices=my_events, value=None),
             "",
             *fav_buttons_update(favs),
-            ""
+            "",
+            gr.update(choices=fav_names, value=None),
         )
 
     fab.click(
         open_main_modal,
         None,
-        [overlay, modal_m, my_event_list, del_msg] + fav_btns + [fav_msg],
+        [overlay, modal_m, my_event_list, del_msg] + fav_btns + [fav_msg, fav_del_dd],
     )
 
     def close_all():
@@ -726,10 +780,18 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     for b in fav_btns:
         b.click(fn=set_title_from_fav, inputs=b, outputs=t_in)
 
+    # ✅ 즐겨찾기 추가 -> 버튼 10개 + 삭제드롭다운까지 갱신
     fav_add_btn.click(
         fn=add_fav_only,
         inputs=[fav_new],
-        outputs=[fav_msg] + fav_btns,
+        outputs=[fav_msg] + fav_btns + [fav_del_dd],
+    )
+
+    # ✅ 즐겨찾기 삭제
+    fav_del_btn.click(
+        fn=delete_fav,
+        inputs=[fav_del_dd],
+        outputs=[fav_msg] + fav_btns + [fav_del_dd],
     )
 
     addr_btn.click(lambda: gr.update(visible=True), None, modal_s)
@@ -764,23 +826,37 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     s_final.click(confirm_k, [q_res, search_state], [addr_v, selected_addr, modal_s])
 
+    # ✅ 저장 시: 탐색 리스트 갱신 + 모달 닫기 + 즐겨찾기 갱신 + 지도 iframe 강제 갱신
     def save_and_close(title, img, start, end, addr, req: gr.Request):
         _ = save_data(title, img, start, end, addr, req)
         html_list = get_list_html()
         favs = get_top_favs(10)
-        return html_list, gr.update(visible=False), gr.update(visible=False), *fav_buttons_update(favs)
+        fav_names = get_fav_names(50)
+        return (
+            html_list,
+            map_iframe_html(),               # ✅ 지도 즉시 갱신
+            gr.update(visible=False),
+            gr.update(visible=False),
+            *fav_buttons_update(favs),
+            gr.update(choices=fav_names, value=None),
+        )
 
     m_save.click(
         save_and_close,
         [t_in, img_in, s_in, e_in, selected_addr],
-        [explore_html, overlay, modal_m] + fav_btns,
+        [explore_html, map_html, overlay, modal_m] + fav_btns + [fav_del_dd],
     )
 
+    # ✅ 이벤트 삭제 시: 탐색 리스트 갱신 + 지도 갱신
+    def delete_then_refresh_map(event_id, req: gr.Request):
+        msg, dd_upd = delete_my_event(event_id, req)
+        return msg, dd_upd, get_list_html(), map_iframe_html()
+
     del_btn.click(
-        delete_my_event,
+        delete_then_refresh_map,
         [my_event_list],
-        [del_msg, my_event_list],
-    ).then(get_list_html, None, explore_html)
+        [del_msg, my_event_list, explore_html, map_html],
+    )
 
 
 # =========================================================
