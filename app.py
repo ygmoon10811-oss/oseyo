@@ -14,8 +14,8 @@ import requests
 from PIL import Image
 
 import gradio as gr
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 import uvicorn
 
 
@@ -28,17 +28,16 @@ def now_kst():
     return datetime.now(KST)
 
 COOKIE_NAME = "oseyo_session"
-SESSION_HOURS = 24 * 7  # 7일
+SESSION_HOURS = 24 * 7
 
 KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "").strip()
 KAKAO_JAVASCRIPT_KEY = os.getenv("KAKAO_JAVASCRIPT_KEY", "").strip()
 
-# 휴대폰 인증 임시 저장소 (실제 운영시에는 Redis 등 사용 권장)
 phone_verification_codes = {}
 
 
 # =========================================================
-# 1) 환경/DB
+# 1) DB
 # =========================================================
 def pick_db_path():
     candidates = ["/var/data", "/tmp"]
@@ -65,7 +64,6 @@ def db_conn():
 
 def init_db():
     with db_conn() as con:
-        # 이벤트 테이블
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS events (
@@ -83,7 +81,6 @@ def init_db():
             """
         )
         
-        # 즐겨찾기 테이블
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS favs (
@@ -93,7 +90,6 @@ def init_db():
             """
         )
 
-        # 사용자 테이블 (확장)
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -109,7 +105,6 @@ def init_db():
             """
         )
         
-        # 기존 users 테이블에 새 컬럼 추가 (마이그레이션)
         for col in ["name", "gender", "birth_date", "phone"]:
             try:
                 con.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
@@ -132,7 +127,7 @@ init_db()
 
 
 # =========================================================
-# 2) 비밀번호/세션 유틸
+# 2) 인증 유틸
 # =========================================================
 def make_pw_hash(pw: str) -> str:
     salt = uuid.uuid4().hex
@@ -191,20 +186,18 @@ def get_current_user(request: gr.Request):
 
 
 # =========================================================
-# 2.5) 휴대폰 인증
+# 3) 휴대폰 인증
 # =========================================================
 def send_verification_code(phone: str) -> str:
-    """인증번호 전송 (실제로는 SMS API 사용, 여기서는 시뮬레이션)"""
     code = str(random.randint(100000, 999999))
     phone_verification_codes[phone] = {
         "code": code,
         "expires_at": now_kst() + timedelta(minutes=3)
     }
-    print(f"[SMS] {phone} -> 인증번호: {code}")  # 실제로는 SMS 발송
+    print(f"[SMS] {phone} -> 인증번호: {code}")
     return code
 
 def verify_phone_code(phone: str, code: str) -> bool:
-    """인증번호 확인"""
     if phone not in phone_verification_codes:
         return False
     
@@ -221,7 +214,7 @@ def verify_phone_code(phone: str, code: str) -> bool:
 
 
 # =========================================================
-# 3) CSS
+# 4) CSS
 # =========================================================
 CSS = """
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -233,7 +226,6 @@ html, body {
 }
 .gradio-container { max-width: 100% !important; padding: 0 !important; margin: 0 !important;}
 
-/* 상단 헤더 영역 */
 .header-row {
     padding: 20px 24px 10px 24px;
     display: flex;
@@ -256,7 +248,6 @@ html, body {
     margin-top: 4px;
 }
 
-/* 탭 스타일 */
 .tabs {
     border-bottom: 1px solid #eee;
     margin-top: 10px;
@@ -267,7 +258,6 @@ button.selected {
     border-bottom: 2px solid #111 !important;
 }
 
-/* FAB 버튼 */
 .fab-wrapper {
   position: fixed !important;
   right: 24px !important;
@@ -292,10 +282,8 @@ button.selected {
   line-height: 1 !important;
 }
 
-/* 오버레이 */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 10000; }
 
-/* 모달 */
 .main-modal {
   position: fixed !important;
   top: 50%;
@@ -344,7 +332,6 @@ button.selected {
 .btn-primary { background: #111 !important; color: white !important; }
 .btn-secondary { background: #f0f0f0 !important; color: #333 !important; }
 
-/* 이벤트 카드 */
 .event-card {
   margin-bottom: 24px;
   cursor: pointer;
@@ -377,7 +364,6 @@ button.selected {
   gap: 4px;
 }
 
-/* 즐겨찾기 그리드 */
 .fav-section {
   padding: 20px 24px;
   background: #f9f9f9;
@@ -411,10 +397,9 @@ button.selected {
 
 
 # =========================================================
-# 4) 즐겨찾기 로직
+# 5) 이벤트 로직
 # =========================================================
 def get_fav_html():
-    """즐겨찾기 섹션 HTML 생성"""
     with db_conn() as con:
         rows = con.execute(
             "SELECT name, count FROM favs ORDER BY count DESC LIMIT 10"
@@ -435,7 +420,6 @@ def get_fav_html():
     </div>
     <script>
     function fillEventTitle(title) {{
-        // Gradio의 textbox에 값을 채우는 방법
         const titleInput = document.querySelector('input[placeholder*="예:"]');
         if (titleInput) {{
             titleInput.value = title;
@@ -446,9 +430,6 @@ def get_fav_html():
     """
 
 
-# =========================================================
-# 5) 이벤트 로직
-# =========================================================
 def get_list_html():
     with db_conn() as con:
         rows = con.execute(
@@ -532,7 +513,6 @@ def save_data(title, img, start, end, addr_obj, request: gr.Request):
                 user['id']
             ),
         )
-        # 즐겨찾기 자동 추가
         con.execute(
             "INSERT INTO favs (name, count) VALUES (?, 1) "
             "ON CONFLICT(name) DO UPDATE SET count = count + 1",
@@ -571,12 +551,7 @@ def delete_my_event(event_id, request: gr.Request):
 
 
 # =========================================================
-# 6) FastAPI 먼저 초기화
-# =========================================================
-app = FastAPI()
-
-# =========================================================
-# 7) Gradio UI
+# 6) Gradio UI
 # =========================================================
 now_dt = now_kst()
 later_dt = now_dt + timedelta(hours=2)
@@ -585,7 +560,6 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     search_state = gr.State([])
     selected_addr = gr.State({})
 
-    # 헤더
     gr.HTML("""
     <div class="header-row">
         <div class="main-title">지금, <b>열려 있습니다</b><br><span style="font-size:15px; color:#666; font-weight:400;">편하면 오셔도 됩니다</span></div>
@@ -595,19 +569,17 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     with gr.Tabs(elem_classes=["tabs"]):
         with gr.Tab("탐색"):
-            fav_html = gr.HTML(get_fav_html())  # 즐겨찾기 섹션
+            fav_html = gr.HTML(get_fav_html())
             explore_html = gr.HTML(get_list_html())
             refresh_btn = gr.Button("🔄 목록 새로고침", variant="secondary", size="sm")
         with gr.Tab("지도"):
             gr.HTML('<iframe src="/map" style="width:100%;height:70vh;border:none;border-radius:16px;"></iframe>')
 
-    # FAB
     with gr.Row(elem_classes=["fab-wrapper"]):
         fab = gr.Button("+")
 
     overlay = gr.HTML("<div class='overlay'></div>", visible=False)
 
-    # 메인 모달
     with gr.Column(visible=False, elem_classes=["main-modal"]) as modal_m:
         gr.HTML("<div class='modal-header'>새 이벤트 만들기</div>")
 
@@ -636,7 +608,6 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             m_close = gr.Button("닫기", elem_classes=["btn-secondary"])
             m_save = gr.Button("등록하기", elem_classes=["btn-primary"])
 
-    # 장소 검색 모달
     with gr.Column(visible=False, elem_classes=["sub-modal", "main-modal"]) as modal_s:
         gr.HTML("<div class='modal-header'>장소 검색</div>")
         with gr.Column(elem_classes=["modal-body"]):
@@ -647,7 +618,6 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             s_close = gr.Button("취소", elem_classes=["btn-secondary"])
             s_final = gr.Button("확정", elem_classes=["btn-primary"])
 
-    # 이벤트 핸들러
     refresh_btn.click(fn=lambda: (get_list_html(), get_fav_html()), outputs=[explore_html, fav_html])
 
     def open_main_modal(request: gr.Request):
@@ -708,36 +678,22 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
 
 # =========================================================
-# 8) FastAPI 라우트 및 인증
+# 7) FastAPI 앱 생성
+# =========================================================
+app = FastAPI()
+
+
+# =========================================================
+# 8) 로그인/회원가입 라우트 (Gradio 마운트 전에 정의)
 # =========================================================
 
-PUBLIC_PATHS = {"/", "/login", "/signup", "/logout", "/health", "/map", "/verify-phone", "/check-verification"}
-
-@app.middleware("http")
-async def auth_guard(request: Request, call_next):
-    path = request.url.path or "/"
-    
-    # 정적 파일과 public 경로는 인증 제외
-    if (path.startswith("/static") or 
-        path.startswith("/assets") or 
-        path.startswith("/file=") or
-        path in PUBLIC_PATHS):
-        return await call_next(request)
-    
-    # /app 경로는 인증 필요
-    if path.startswith("/app"):
-        token = request.cookies.get(COOKIE_NAME)
-        if not get_user_by_token(token):
-            return RedirectResponse("/login", status_code=303)
-
-    return await call_next(request)
-
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
     token = request.cookies.get(COOKIE_NAME)
     if get_user_by_token(token):
         return RedirectResponse("/app", status_code=303)
     return RedirectResponse("/login", status_code=303)
+
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
@@ -746,7 +702,7 @@ async def login_page():
 <html>
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>오세요 - 로그인</title>
   <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -764,8 +720,7 @@ async def login_page():
     
     .social-btn {{
       display: block; width: 100%; padding: 14px 0; margin-bottom: 10px;
-      border-radius: 6px; border: none; font-size: 15px; font-weight: 700; cursor: pointer; text-decoration: none;
-      box-sizing: border-box;
+      border-radius: 6px; border: none; font-size: 15px; font-weight: 700; cursor: pointer;
     }}
     .naver {{ background: #03C75A; color: white; }}
     .kakao {{ background: #FEE500; color: #000; }}
@@ -819,3 +774,15 @@ async def login_page():
 </html>
     """
     return HTMLResponse(html_content)
+
+
+@app.post("/login")
+async def login_post(request: Request):
+    form = await request.form()
+    username = form.get("username")
+    password = form.get("password")
+    
+    with db_conn() as con:
+        row = con.execute("SELECT id, pw_hash FROM users WHERE username=?", (username,)).fetchone()
+    
+    if (not row
