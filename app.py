@@ -9,6 +9,8 @@ import html
 import hashlib
 import random
 import re
+import smtplib
+from email.message import EmailMessage
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -34,22 +36,21 @@ SESSION_HOURS = 24 * 7  # 7일
 KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "").strip()
 KAKAO_JAVASCRIPT_KEY = os.getenv("KAKAO_JAVASCRIPT_KEY", "").strip()
 
-# ---- 휴대폰 OTP 설정 ----
-OTP_TTL_MINUTES = 5
-ALLOW_OTP_DEBUG = os.getenv("ALLOW_OTP_DEBUG", "1").strip()  # 1이면(개발용) 화면에 debug_code를 표시
-SMS_PROVIDER = os.getenv("SMS_PROVIDER", "").strip().lower()  # "twilio" 등
+# ---- 이메일 OTP 설정 ----
+EMAIL_OTP_TTL_MINUTES = 10
+ALLOW_EMAIL_OTP_DEBUG = os.getenv("ALLOW_EMAIL_OTP_DEBUG", "1").strip()
 
-# Twilio 옵션(선택)
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-TWILIO_FROM = os.getenv("TWILIO_FROM", "").strip()
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465").strip() or "465")
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
+SMTP_FROM = os.getenv("SMTP_FROM", "").strip()  # "오세요 <me@gmail.com>" 형태 가능
 
 
 # =========================================================
 # 1) 환경/DB
 # =========================================================
 def pick_db_path():
-    # Render 같은 환경에서 디스크 마운트가 있으면 /var/data, 아니면 /tmp
     candidates = ["/var/data", "/tmp"]
     for d in candidates:
         try:
@@ -58,19 +59,16 @@ def pick_db_path():
             with open(test, "w", encoding="utf-8") as f:
                 f.write("ok")
             os.remove(test)
-            return os.path.join(d, "oseyo_final_v3.db")
+            return os.path.join(d, "oseyo_final_email_v1.db")
         except Exception:
             continue
-    return "/tmp/oseyo_final_v3.db"
-
+    return "/tmp/oseyo_final_email_v1.db"
 
 DB_PATH = pick_db_path()
 print(f"[DB] Using: {DB_PATH}")
 
-
 def db_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
-
 
 def init_db():
     with db_conn() as con:
@@ -91,14 +89,10 @@ def init_db():
             );
             """
         )
-        # 마이그레이션(예전 DB 대비)
-        for col_sql in [
-            "ALTER TABLE events ADD COLUMN user_id TEXT",
-        ]:
-            try:
-                con.execute(col_sql)
-            except Exception:
-                pass
+        try:
+            con.execute("ALTER TABLE events ADD COLUMN user_id TEXT")
+        except Exception:
+            pass
 
         # 즐겨찾기
         con.execute(
@@ -110,13 +104,12 @@ def init_db():
             );
             """
         )
-        # favs 마이그레이션
         try:
             con.execute("ALTER TABLE favs ADD COLUMN updated_at TEXT")
         except Exception:
             pass
 
-        # 유저 (회원가입 정보 확장)
+        # 유저 (이메일 인증)
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -126,19 +119,17 @@ def init_db():
                 name TEXT,
                 gender TEXT,
                 birth TEXT,
-                phone TEXT,
-                phone_verified_at TEXT,
+                email_verified_at TEXT,
                 created_at TEXT
             );
             """
         )
-        # users 마이그레이션
+        # 마이그레이션(예전 DB 대비)
         for col_sql in [
             "ALTER TABLE users ADD COLUMN name TEXT",
             "ALTER TABLE users ADD COLUMN gender TEXT",
             "ALTER TABLE users ADD COLUMN birth TEXT",
-            "ALTER TABLE users ADD COLUMN phone TEXT",
-            "ALTER TABLE users ADD COLUMN phone_verified_at TEXT",
+            "ALTER TABLE users ADD COLUMN email_verified_at TEXT",
         ]:
             try:
                 con.execute(col_sql)
@@ -156,11 +147,11 @@ def init_db():
             """
         )
 
-        # 휴대폰 OTP
+        # 이메일 OTP
         con.execute(
             """
-            CREATE TABLE IF NOT EXISTS phone_otps (
-                phone TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS email_otps (
+                email TEXT PRIMARY KEY,
                 code_hash TEXT,
                 expires_at TEXT,
                 created_at TEXT
@@ -233,49 +224,47 @@ def get_current_user(request: gr.Request):
 
 
 # =========================================================
-# 3) OTP(휴대폰 인증) 유틸
+# 3) 이메일 OTP 유틸
 # =========================================================
-def normalize_phone(p: str) -> str:
-    p = (p or "").strip()
-    p = re.sub(r"[^0-9]", "", p)
-    return p
+def normalize_email(e: str) -> str:
+    return (e or "").strip().lower()
 
-def valid_phone(p: str) -> bool:
-    # 한국 휴대폰 기준 대략 체크(10~11자리)
-    return bool(re.fullmatch(r"\d{10,11}", p or ""))
+def valid_email(e: str) -> bool:
+    # 너무 엄격하게 안 함(현실적으로 통과율 높게)
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", e or ""))
 
 def otp_hash(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
-def create_otp(phone: str) -> str:
+def create_email_otp(email: str) -> str:
     code = f"{random.randint(0, 999999):06d}"
-    exp = now_kst() + timedelta(minutes=OTP_TTL_MINUTES)
+    exp = now_kst() + timedelta(minutes=EMAIL_OTP_TTL_MINUTES)
     with db_conn() as con:
         con.execute(
             """
-            INSERT INTO phone_otps (phone, code_hash, expires_at, created_at)
+            INSERT INTO email_otps (email, code_hash, expires_at, created_at)
             VALUES (?,?,?,?)
-            ON CONFLICT(phone) DO UPDATE SET
+            ON CONFLICT(email) DO UPDATE SET
                 code_hash=excluded.code_hash,
                 expires_at=excluded.expires_at,
                 created_at=excluded.created_at
             """,
-            (phone, otp_hash(code), exp.isoformat(), now_kst().isoformat()),
+            (email, otp_hash(code), exp.isoformat(), now_kst().isoformat()),
         )
         con.commit()
     return code
 
-def verify_otp(phone: str, code: str) -> bool:
-    phone = normalize_phone(phone)
+def verify_email_otp(email: str, code: str) -> bool:
+    email = normalize_email(email)
     code = (code or "").strip()
-    if not (valid_phone(phone) and re.fullmatch(r"\d{6}", code)):
+    if not (valid_email(email) and re.fullmatch(r"\d{6}", code)):
         return False
 
     now_iso = now_kst().isoformat()
     with db_conn() as con:
         row = con.execute(
-            "SELECT code_hash, expires_at FROM phone_otps WHERE phone=?",
-            (phone,),
+            "SELECT code_hash, expires_at FROM email_otps WHERE email=?",
+            (email,),
         ).fetchone()
     if not row:
         return False
@@ -285,24 +274,27 @@ def verify_otp(phone: str, code: str) -> bool:
         return False
     return otp_hash(code) == code_h
 
-def send_sms_twilio(to_phone: str, message: str):
-    # Twilio는 국가번호 포함 필요할 수 있음(+82...). 여기선 최소 구현만 제공
-    # 운영에서는 전화번호 포맷을 국제표준으로 맞추는 것을 권장함.
-    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM):
-        raise RuntimeError("Twilio env vars missing")
-    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
-    data = {
-        "From": TWILIO_FROM,
-        "To": to_phone,
-        "Body": message,
-    }
-    r = requests.post(url, data=data, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=15)
-    r.raise_for_status()
+def smtp_ready() -> bool:
+    return bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
+
+def send_email(to_email: str, subject: str, body: str):
+    if not smtp_ready():
+        raise RuntimeError("SMTP env vars missing")
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = SMTP_FROM or SMTP_USER
+    msg["To"] = to_email
+    msg.set_content(body)
+
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as s:
+        s.login(SMTP_USER, SMTP_PASS)
+        s.send_message(msg)
     return True
 
 
 # =========================================================
-# 4) CSS (요청하신 디자인 반영)
+# 4) CSS
 # =========================================================
 CSS = """
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -314,7 +306,6 @@ html, body {
 }
 .gradio-container { max-width: 100% !important; padding: 0 !important; margin: 0 !important;}
 
-/* 상단 헤더 영역 */
 .header-row {
     padding: 20px 24px 10px 24px;
     display: flex;
@@ -335,7 +326,6 @@ html, body {
     margin-top: 4px;
 }
 
-/* 탭 스타일 조정 */
 .tabs { border-bottom: 1px solid #eee; margin-top: 10px; }
 button.selected {
     color: #111 !important;
@@ -343,7 +333,6 @@ button.selected {
     border-bottom: 2px solid #111 !important;
 }
 
-/* FAB 버튼 - 오른쪽 하단 고정 */
 .fab-wrapper {
   position: fixed !important;
   right: 24px !important;
@@ -368,10 +357,8 @@ button.selected {
   line-height: 1 !important;
 }
 
-/* 오버레이 */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 10000; }
 
-/* 메인 모달 */
 .main-modal {
   position: fixed !important;
   top: 50%;
@@ -420,7 +407,6 @@ button.selected {
 .btn-primary { background: #111 !important; color: white !important; }
 .btn-secondary { background: #f0f0f0 !important; color: #333 !important; }
 
-/* 이벤트 카드 */
 .event-card { margin-bottom: 24px; cursor: pointer; }
 .event-photo {
   width: 100%;
@@ -448,8 +434,6 @@ button.selected {
   gap: 4px;
 }
 
-/* 즐겨찾기 */
-.fav-title { font-weight: 700; font-size: 14px; margin-top: 6px; }
 .fav-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .fav-grid button {
   font-size: 13px !important;
@@ -548,7 +532,6 @@ def save_data(title, img, start, end, addr_obj, request: gr.Request):
                 user["id"],
             ),
         )
-        # 즐겨찾기 자동 증가
         con.execute(
             """
             INSERT INTO favs (name, count, updated_at) VALUES (?, 1, ?)
@@ -596,10 +579,20 @@ def get_top_favs(limit=10):
         ).fetchall()
     return [{"name": r[0], "count": r[1]} for r in rows]
 
+def fav_buttons_update(favs):
+    updates = []
+    for i in range(10):
+        if i < len(favs):
+            updates.append(gr.update(value=f"⭐ {favs[i]['name']}", visible=True))
+        else:
+            updates.append(gr.update(value="", visible=False))
+    return updates
+
 def add_fav_only(name: str, request: gr.Request):
     user = get_current_user(request)
     if not user:
-        return "로그인이 필요합니다.", *([gr.update()] * 10)
+        favs = get_top_favs(10)
+        return "로그인이 필요합니다.", *fav_buttons_update(favs)
 
     name = (name or "").strip()
     if not name:
@@ -618,17 +611,6 @@ def add_fav_only(name: str, request: gr.Request):
 
     favs = get_top_favs(10)
     return "✅ 즐겨찾기에 추가되었습니다.", *fav_buttons_update(favs)
-
-def fav_buttons_update(favs):
-    # 10개 버튼 업데이트(라벨/보임)
-    updates = []
-    for i in range(10):
-        if i < len(favs):
-            label = f"⭐ {favs[i]['name']}"
-            updates.append(gr.update(value=label, visible=True))
-        else:
-            updates.append(gr.update(value="", visible=False))
-    return updates
 
 
 # =========================================================
@@ -650,48 +632,33 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     with gr.Tabs(elem_classes=["tabs"]):
         with gr.Tab("탐색"):
-            # ✅ 중요: 초기값을 서버 시작 시점에 고정하지 않도록 비워두고,
-            # demo.load에서 매번 DB를 읽어 채움.
             explore_html = gr.HTML()
             refresh_btn = gr.Button("🔄 목록 새로고침", variant="secondary", size="sm")
-
         with gr.Tab("지도"):
             gr.HTML('<iframe id="map_iframe" src="/map" style="width:100%;height:70vh;border:none;border-radius:16px;"></iframe>')
 
-    # FAB
     with gr.Row(elem_classes=["fab-wrapper"]):
         fab = gr.Button("+")
 
     overlay = gr.HTML("<div class='overlay'></div>", visible=False)
 
-    # ------------------- 메인 모달 -------------------
     with gr.Column(visible=False, elem_classes=["main-modal"]) as modal_m:
         gr.HTML("<div class='modal-header'>새 이벤트 만들기</div>")
 
         with gr.Tabs(elem_classes=["modal-body"]):
             with gr.Tab("작성하기"):
-                # 즐겨찾기(자주하는 활동)
                 gr.Markdown("### ⭐ 자주하는 활동")
                 gr.Markdown("<div class='small-muted'>버튼을 누르면 이벤트명에 바로 입력됩니다.</div>")
 
                 fav_btns = []
-                with gr.Row():
-                    # 10개 고정 버튼(2열 그리드는 CSS로)
-                    pass
-                fav_wrap = gr.HTML("<div class='fav-grid'>", visible=True)
-                # 버튼은 실제로 Row/Column에 넣으면 grid가 깨져서, 그냥 Column에 넣고 CSS class로 감싼 느낌을 재현
-                # Gradio 구조상 완전한 div wrapping이 어려워서, 버튼 자체 스타일은 동일하게 맞춤.
-                with gr.Column():
+                with gr.Column(elem_classes=["fav-grid"]):
                     for _ in range(10):
-                        b = gr.Button("", visible=False)
-                        fav_btns.append(b)
-                gr.HTML("</div>")
+                        fav_btns.append(gr.Button("", visible=False))
 
                 with gr.Row():
                     fav_new = gr.Textbox(label="즐겨찾기 추가", placeholder="예: 30분 산책", lines=1)
                     fav_add_btn = gr.Button("추가", variant="secondary")
                 fav_msg = gr.Markdown("")
-
                 gr.Markdown("---")
 
                 t_in = gr.Textbox(label="이벤트명", placeholder="예: 30분 산책, 조용히 책 읽기", lines=1)
@@ -716,7 +683,6 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             m_close = gr.Button("닫기", elem_classes=["btn-secondary"])
             m_save = gr.Button("등록하기", elem_classes=["btn-primary"])
 
-    # ------------------- 장소 검색 서브 모달 -------------------
     with gr.Column(visible=False, elem_classes=["sub-modal", "main-modal"]) as modal_s:
         gr.HTML("<div class='modal-header'>장소 검색</div>")
         with gr.Column(elem_classes=["modal-body"]):
@@ -727,14 +693,9 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             s_close = gr.Button("취소", elem_classes=["btn-secondary"])
             s_final = gr.Button("확정", elem_classes=["btn-primary"])
 
-    # ------- 이벤트 핸들러 -------
-
-    # ✅ 페이지 로드시 항상 DB에서 목록을 다시 렌더(새로고침 문제 해결)
     demo.load(fn=get_list_html, inputs=None, outputs=explore_html)
-
     refresh_btn.click(fn=get_list_html, outputs=explore_html)
 
-    # 모달 열기/닫기
     def open_main_modal(request: gr.Request):
         my_events = get_my_events(request)
         favs = get_top_favs(10)
@@ -747,7 +708,6 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             ""
         )
 
-    # outputs: overlay, modal_m, my_event_list, del_msg, fav_btns(10), fav_msg
     fab.click(
         open_main_modal,
         None,
@@ -759,23 +719,19 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     m_close.click(close_all, None, [overlay, modal_m, modal_s])
 
-    # 즐겨찾기 버튼 클릭 -> 이벤트명 채우기
     def set_title_from_fav(btn_label):
-        # "⭐ name" 에서 name만 추출
         name = (btn_label or "").replace("⭐", "").strip()
         return gr.update(value=name)
 
     for b in fav_btns:
         b.click(fn=set_title_from_fav, inputs=b, outputs=t_in)
 
-    # 즐겨찾기 추가
     fav_add_btn.click(
         fn=add_fav_only,
         inputs=[fav_new],
         outputs=[fav_msg] + fav_btns,
     )
 
-    # 장소 검색 모달
     addr_btn.click(lambda: gr.update(visible=True), None, modal_s)
     s_close.click(lambda: gr.update(visible=False), None, modal_s)
 
@@ -808,19 +764,11 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     s_final.click(confirm_k, [q_res, search_state], [addr_v, selected_addr, modal_s])
 
-    # 저장
     def save_and_close(title, img, start, end, addr, req: gr.Request):
-        msg = save_data(title, img, start, end, addr, req)
+        _ = save_data(title, img, start, end, addr, req)
         html_list = get_list_html()
-        # 저장 후 즐겨찾기도 갱신
         favs = get_top_favs(10)
-        # 메시지는 일단 console/리턴하지 않고, 리스트 갱신 + 모달 닫기만
-        return (
-            html_list,
-            gr.update(visible=False),
-            gr.update(visible=False),
-            *fav_buttons_update(favs),
-        )
+        return html_list, gr.update(visible=False), gr.update(visible=False), *fav_buttons_update(favs)
 
     m_save.click(
         save_and_close,
@@ -828,22 +776,19 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
         [explore_html, overlay, modal_m] + fav_btns,
     )
 
-    # 삭제
     del_btn.click(
         delete_my_event,
         [my_event_list],
         [del_msg, my_event_list],
-    ).then(
-        get_list_html, None, explore_html
-    )
+    ).then(get_list_html, None, explore_html)
 
 
 # =========================================================
-# 7) FastAPI + 로그인/회원가입/OTP
+# 7) FastAPI + 로그인/회원가입 + 이메일 OTP
 # =========================================================
 app = FastAPI()
 
-PUBLIC_PATHS = {"/", "/login", "/signup", "/logout", "/health", "/map", "/send_otp"}
+PUBLIC_PATHS = {"/", "/login", "/signup", "/logout", "/health", "/map", "/send_email_otp"}
 
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
@@ -871,7 +816,7 @@ def root(request: Request):
 
 @app.get("/login")
 def login_page():
-    html_content = f"""
+    html_content = """
 <!doctype html>
 <html>
 <head>
@@ -880,59 +825,23 @@ def login_page():
   <title>오세요 - 로그인</title>
   <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-    body {{
-      font-family: Pretendard, system-ui;
-      background: #fff; margin: 0; padding: 0;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      height: 100vh;
-    }}
-    .container {{
-      width: 100%; max-width: 360px; padding: 20px; text-align: center;
-    }}
-    h1 {{ font-size: 32px; font-weight: 300; margin: 0 0 10px 0; color: #333; }}
-    p.sub {{ font-size: 15px; color: #888; margin-bottom: 40px; }}
-
-    .social-btn {{
-      display: block; width: 100%; padding: 14px 0; margin-bottom: 10px;
-      border-radius: 6px; border: none; font-size: 15px; font-weight: 700; cursor: pointer; text-decoration: none;
-      box-sizing: border-box;
-    }}
-    .naver {{ background: #03C75A; color: white; }}
-    .kakao {{ background: #FEE500; color: #000; }}
-
-    .divider {{
-      margin: 30px 0; position: relative; text-align: center; font-size: 12px; color: #ccc;
-    }}
-    .divider::before, .divider::after {{
-      content: ""; position: absolute; top: 50%; width: 40%; height: 1px; background: #eee;
-    }}
-    .divider::before {{ left: 0; }}
-    .divider::after {{ right: 0; }}
-
-    input {{
-      width: 100%; padding: 14px; margin-bottom: 10px;
-      border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 15px;
-    }}
-    input:focus {{ outline: none; border-color: #333; }}
-
-    .login-btn {{
-      width: 100%; padding: 15px; border-radius: 6px; border: none;
-      background: #111; color: white; font-weight: 700; font-size: 16px; cursor: pointer; margin-top: 10px;
-    }}
-
-    .footer-link {{ margin-top: 20px; font-size: 13px; color: #888; }}
-    .footer-link a {{ color: #333; text-decoration: underline; }}
+    body { font-family: Pretendard, system-ui; background:#fff; margin:0; padding:0;
+      display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; }
+    .container { width:100%; max-width:360px; padding:20px; text-align:center; }
+    h1 { font-size:32px; font-weight:300; margin:0 0 10px 0; color:#333; }
+    p.sub { font-size:15px; color:#888; margin-bottom:40px; }
+    input { width:100%; padding:14px; margin-bottom:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; font-size:15px; }
+    input:focus { outline:none; border-color:#333; }
+    .login-btn { width:100%; padding:15px; border-radius:6px; border:none; background:#111; color:white;
+      font-weight:700; font-size:16px; cursor:pointer; margin-top:10px; }
+    .footer-link { margin-top:20px; font-size:13px; color:#888; }
+    .footer-link a { color:#333; text-decoration:underline; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>오세요</h1>
     <p class="sub">열려 있는 순간을 나누세요</p>
-
-    <button class="social-btn naver" onclick="document.getElementById('uid').focus()">네이버로 시작하기</button>
-    <button class="social-btn kakao" onclick="document.getElementById('uid').focus()">카카오로 시작하기</button>
-
-    <div class="divider">또는</div>
 
     <form method="post" action="/login">
       <input id="uid" name="username" placeholder="이메일" required />
@@ -951,6 +860,8 @@ def login_page():
 
 @app.post("/login")
 def login(username: str = Form(...), password: str = Form(...)):
+    username = normalize_email(username)
+
     with db_conn() as con:
         row = con.execute("SELECT id, pw_hash FROM users WHERE username=?", (username,)).fetchone()
 
@@ -969,43 +880,45 @@ def login(username: str = Form(...), password: str = Form(...)):
     return resp
 
 
-# ---------- OTP 발송 ----------
-@app.post("/send_otp")
-async def send_otp(request: Request):
+@app.post("/send_email_otp")
+async def send_email_otp(request: Request):
     try:
         payload = await request.json()
     except Exception:
         payload = {}
 
-    phone = normalize_phone(payload.get("phone", ""))
-    if not valid_phone(phone):
-        return JSONResponse({"ok": False, "message": "휴대폰 번호를 정확히 입력해 주세요(숫자만 10~11자리)."}, status_code=400)
+    email = normalize_email(payload.get("email", ""))
+    if not valid_email(email):
+        return JSONResponse({"ok": False, "message": "이메일 형식을 확인해 주세요."}, status_code=400)
 
-    code = create_otp(phone)
+    code = create_email_otp(email)
 
-    # 메시지
-    msg = f"[오세요] 인증번호는 {code} 입니다. (유효시간 {OTP_TTL_MINUTES}분)"
+    subject = "[오세요] 이메일 인증번호 안내"
+    body = f"""오세요 이메일 인증번호는 아래와 같습니다.
+
+인증번호: {code}
+유효시간: {EMAIL_OTP_TTL_MINUTES}분
+
+본인이 요청하지 않았다면 이 메일을 무시해 주세요.
+"""
 
     sent = False
     err = None
-    if SMS_PROVIDER == "twilio":
+    if smtp_ready():
         try:
-            # Twilio는 보통 +82... 필요. 사용자가 010...으로 넣으면 운영에선 변환 로직을 추가하는 게 좋음.
-            # 여기서는 입력 그대로 보냄(테스트용).
-            send_sms_twilio(phone, msg)
+            send_email(email, subject, body)
             sent = True
         except Exception as e:
             err = str(e)
             sent = False
 
-    # SMS 설정이 없으면 개발모드로 동작(코드 표시)
-    resp = {"ok": True, "message": "인증번호를 전송했습니다."}
-    if not sent and SMS_PROVIDER:
-        resp["message"] = "SMS 전송 설정이 올바르지 않아 전송에 실패했습니다. (개발모드로 진행)"
-        resp["provider_error"] = err
+    resp = {"ok": True, "message": "인증메일을 전송했습니다."}
+    if not sent:
+        resp["message"] = "SMTP 설정이 없어 메일 전송을 건너뛰었습니다. (개발모드)"
+        resp["smtp_error"] = err
 
-    if ALLOW_OTP_DEBUG == "1":
-        resp["debug_code"] = code  # ✅ 개발용: 화면에 코드 표시(운영에서는 0 권장)
+    if ALLOW_EMAIL_OTP_DEBUG == "1":
+        resp["debug_code"] = code  # 운영에서는 0 권장
 
     return JSONResponse(resp)
 
@@ -1021,60 +934,41 @@ def signup_page():
   <title>오세요 - 회원가입</title>
   <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-    body {{
-      font-family: Pretendard, system-ui;
-      background: #fff; margin: 0; padding: 0;
-      display: flex; justify-content: center; align-items: center;
-      min-height: 100vh;
-    }}
-    .wrap {{
-      width: 100%; max-width: 380px; padding: 20px;
-    }}
-    h2 {{ margin: 0 0 12px 0; font-size: 22px; }}
-    .muted {{ color: #777; font-size: 13px; margin-bottom: 18px; }}
-    input, select {{
-      width: 100%; padding: 12px; margin: 8px 0;
-      border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box;
-      font-size: 14px;
-    }}
-    input:focus, select:focus {{ outline: none; border-color: #111; }}
-    .row {{ display: flex; gap: 8px; }}
-    .row > * {{ flex: 1; }}
-    .btn {{
-      width: 100%; padding: 13px; background: #111; color: #fff;
-      border: none; border-radius: 8px; cursor: pointer; font-weight: 700; margin-top: 10px;
-    }}
-    .btn2 {{
-      padding: 12px; background: #f0f0f0; color: #111;
-      border: none; border-radius: 8px; cursor: pointer; font-weight: 700;
-      white-space: nowrap;
-    }}
-    .msg {{ margin-top: 10px; font-size: 13px; color: #444; }}
-    .err {{ color: #c00; }}
-    .ok {{ color: #0a7; }}
-    a {{ color: #333; }}
-    .debug {{
-      background: #fff7cc; padding: 10px; border-radius: 8px; font-size: 13px; margin-top: 10px;
-      display:none;
-    }}
+    body {{ font-family:Pretendard, system-ui; background:#fff; margin:0; padding:0;
+      display:flex; justify-content:center; align-items:center; min-height:100vh; }}
+    .wrap {{ width:100%; max-width:390px; padding:20px; }}
+    h2 {{ margin:0 0 12px 0; font-size:22px; }}
+    .muted {{ color:#777; font-size:13px; margin-bottom:18px; }}
+    input, select {{ width:100%; padding:12px; margin:8px 0; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; font-size:14px; }}
+    input:focus, select:focus {{ outline:none; border-color:#111; }}
+    .row {{ display:flex; gap:8px; }}
+    .row > * {{ flex:1; }}
+    .btn {{ width:100%; padding:13px; background:#111; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:700; margin-top:10px; }}
+    .btn2 {{ padding:12px; background:#f0f0f0; color:#111; border:none; border-radius:8px; cursor:pointer; font-weight:700; white-space:nowrap; }}
+    .msg {{ margin-top:10px; font-size:13px; color:#444; }}
+    .err {{ color:#c00; }}
+    .ok {{ color:#0a7; }}
+    a {{ color:#333; }}
+    .debug {{ background:#fff7cc; padding:10px; border-radius:8px; font-size:13px; margin-top:10px; display:none; }}
   </style>
 </head>
 <body>
   <div class="wrap">
     <h2>회원가입</h2>
-    <div class="muted">정보를 입력하고 휴대폰 인증을 완료해 주세요.</div>
+    <div class="muted">이메일 인증 후 가입을 완료해 주세요.</div>
 
     <div class="row">
-      <input id="phone" name="phone" placeholder="휴대폰 번호(숫자만)" />
-      <button class="btn2" type="button" onclick="sendOtp()">인증번호 받기</button>
+      <input id="email" placeholder="이메일(아이디)" />
+      <button class="btn2" type="button" onclick="sendOtp()">인증메일 받기</button>
     </div>
-    <input id="otp" name="otp" placeholder="인증번호 6자리" />
-
+    <input id="otp" placeholder="인증번호 6자리" />
     <div id="otpMsg" class="msg"></div>
     <div id="debugBox" class="debug"></div>
 
     <form method="post" action="/signup" onsubmit="return beforeSubmit();">
-      <input name="username" placeholder="이메일(아이디)" required />
+      <input id="usernameHidden" name="username" type="hidden" />
+      <input id="otpHidden" name="otp" type="hidden" />
+
       <input name="password" type="password" placeholder="비밀번호" required />
       <input name="name" placeholder="이름" required />
 
@@ -1088,10 +982,6 @@ def signup_page():
         <input name="birth" type="date" required />
       </div>
 
-      <!-- phone/otp를 폼에 같이 실어 보냄 -->
-      <input type="hidden" id="phoneHidden" name="phone" />
-      <input type="hidden" id="otpHidden" name="otp" />
-
       <button class="btn" type="submit">가입완료</button>
       <p style="margin-top:12px;font-size:13px;color:#666;">
         이미 계정이 있나요? <a href="/login">로그인</a>
@@ -1101,23 +991,23 @@ def signup_page():
 
 <script>
   async function sendOtp() {{
-    const phone = document.getElementById("phone").value.trim();
+    const email = document.getElementById("email").value.trim();
     const msgEl = document.getElementById("otpMsg");
     const dbg = document.getElementById("debugBox");
     msgEl.textContent = "";
     dbg.style.display = "none";
     dbg.textContent = "";
 
-    if (!phone) {{
-      msgEl.innerHTML = '<span class="err">휴대폰 번호를 입력해 주세요.</span>';
+    if (!email) {{
+      msgEl.innerHTML = '<span class="err">이메일을 입력해 주세요.</span>';
       return;
     }}
 
     try {{
-      const r = await fetch("/send_otp", {{
+      const r = await fetch("/send_email_otp", {{
         method: "POST",
         headers: {{"Content-Type":"application/json"}},
-        body: JSON.stringify({{phone}})
+        body: JSON.stringify({{email}})
       }});
       const data = await r.json();
       if (!r.ok || !data.ok) {{
@@ -1136,9 +1026,10 @@ def signup_page():
   }}
 
   function beforeSubmit() {{
-    // 폼 제출 전에 hidden에 phone/otp를 복사
-    document.getElementById("phoneHidden").value = document.getElementById("phone").value.trim();
-    document.getElementById("otpHidden").value = document.getElementById("otp").value.trim();
+    const email = document.getElementById("email").value.trim();
+    const otp = document.getElementById("otp").value.trim();
+    document.getElementById("usernameHidden").value = email;
+    document.getElementById("otpHidden").value = otp;
     return true;
   }}
 </script>
@@ -1150,42 +1041,39 @@ def signup_page():
 @app.post("/signup")
 def signup(
     username: str = Form(...),
+    otp: str = Form(...),
     password: str = Form(...),
     name: str = Form(...),
     gender: str = Form(...),
     birth: str = Form(...),
-    phone: str = Form(...),
-    otp: str = Form(...),
 ):
-    phone_n = normalize_phone(phone)
+    email = normalize_email(username)
 
-    # 휴대폰 인증 필수
-    if not verify_otp(phone_n, otp):
-        return HTMLResponse("<script>alert('휴대폰 인증번호가 올바르지 않거나 만료되었습니다.');history.back();</script>")
+    if not verify_email_otp(email, otp):
+        return HTMLResponse("<script>alert('이메일 인증번호가 올바르지 않거나 만료되었습니다.');history.back();</script>")
 
     uid = uuid.uuid4().hex
     try:
         with db_conn() as con:
             con.execute(
                 """
-                INSERT INTO users (id, username, pw_hash, name, gender, birth, phone, phone_verified_at, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?)
+                INSERT INTO users (id, username, pw_hash, name, gender, birth, email_verified_at, created_at)
+                VALUES (?,?,?,?,?,?,?,?)
                 """,
                 (
                     uid,
-                    username,
+                    email,
                     make_pw_hash(password),
-                    name.strip(),
+                    (name or "").strip(),
                     (gender or "").strip(),
                     (birth or "").strip(),
-                    phone_n,
                     now_kst().isoformat(timespec="seconds"),
                     now_kst().isoformat(timespec="seconds"),
                 ),
             )
             con.commit()
     except Exception:
-        return HTMLResponse("<script>alert('이미 존재하는 아이디이거나 가입 정보가 올바르지 않습니다.');history.back();</script>")
+        return HTMLResponse("<script>alert('이미 존재하는 이메일이거나 가입 정보가 올바르지 않습니다.');history.back();</script>")
 
     token = new_session(uid)
     resp = RedirectResponse("/app", status_code=303)
@@ -1206,7 +1094,7 @@ def logout():
 
 
 # =========================================================
-# 8) Map (카카오맵)
+# 8) Map
 # =========================================================
 @app.get("/map")
 def map_h():
@@ -1215,11 +1103,8 @@ def map_h():
 
     data = []
     for r in rows:
-        data.append(
-            {"title": r[0], "photo": r[1], "lat": r[2], "lng": r[3], "addr": r[4], "start": r[5]}
-        )
+        data.append({"title": r[0], "photo": r[1], "lat": r[2], "lng": r[3], "addr": r[4], "start": r[5]})
 
-    # InfoWindow 하나만 열리도록(openInfowindow 전역 관리)
     return HTMLResponse(f"""
 <!doctype html>
 <html>
