@@ -147,20 +147,19 @@ def set_auth_cookie(resp, token: str):
 # =========================================================
 app = FastAPI()
 
-
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
 
-    # 공개
+    # 🔓 공개 경로
     if path in ("/login", "/signup", "/logout", "/whoami", "/health"):
         return await call_next(request)
 
-    # 보호 대상
-if path == "/app" or path.startswith("/app?"):
-    token = request.cookies.get(COOKIE_NAME)
-    if not get_user_by_token(token):
-        return RedirectResponse("/login", status_code=303)
+    # 🔐 보호는 /app 진입만
+    if path == "/app" or path.startswith("/app?"):
+        token = request.cookies.get(COOKIE_NAME)
+        if not token or not get_user_by_token(token):
+            return RedirectResponse("/login", status_code=303)
 
     return await call_next(request)
 
@@ -254,4 +253,5 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
