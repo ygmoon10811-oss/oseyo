@@ -155,6 +155,28 @@ def set_auth_cookie(resp, token: str):
 # =========================================================
 app = FastAPI()
 
+@app.get("/debug_db")
+def debug_db():
+    import os, sqlite3
+    db = DB_PATH
+    con = sqlite3.connect(db)
+    tables = [r[0] for r in con.execute("select name from sqlite_master where type='table'").fetchall()]
+    def count(tbl):
+        if tbl in tables:
+            return con.execute(f"select count(*) from {tbl}").fetchone()[0]
+        return None
+    out = {
+        "DB_PATH": db,
+        "exists": os.path.exists(db),
+        "tables": tables,
+        "users_count": count("users"),
+        "sessions_count": count("sessions"),
+        "events_count": count("events"),
+    }
+    con.close()
+    return out
+
+
 @app.get("/debug_cookie")
 def debug_cookie(request: Request):
     # 서버가 실제로 받은 Cookie 헤더/파싱 결과를 그대로 보여줌
@@ -390,6 +412,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
 
 
