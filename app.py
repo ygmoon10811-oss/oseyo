@@ -209,6 +209,32 @@ def whoami(request: Request):
     token = request.cookies.get(COOKIE_NAME)
     return {"cookie": bool(token), "user": get_user_by_token(token)}
 
+@app.post("/login_debug")
+def login_debug(username: str = Form(...), password: str = Form(...)):
+    username = (username or "").strip()
+
+    with db_conn() as con:
+        row = con.execute(
+            "SELECT id, pw_hash FROM users WHERE username=?", (username,)
+        ).fetchone()
+
+    if (not row) or (not check_pw(password, row[1])):
+        return {"ok": False, "reason": "bad_credentials"}
+
+    token = new_session(row[0])
+
+    # ✅ JSON으로 바로 응답 + 쿠키 세팅 (Redirect 없음)
+    resp = HTMLResponse(json.dumps({"ok": True, "token_len": len(token)}), status_code=200)
+    resp.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        secure=False,
+        max_age=SESSION_HOURS * 3600,
+    )
+    return resp
 
 # =========================================================
 # 로그인 / 회원가입
@@ -217,7 +243,7 @@ def whoami(request: Request):
 def login_page():
     return HTMLResponse("""
     <h2 style="text-align:center;margin-top:60px;">오세요 로그인</h2>
-    <form method="post" action="/login" style="max-width:360px;margin:30px auto;">
+    <form method="post" action="/login_debug" style="max-width:360px;margin:30px auto;">
       <input name="username" placeholder="아이디" required style="width:100%;padding:12px;margin:6px 0"/>
       <input name="password" type="password" placeholder="비밀번호" required style="width:100%;padding:12px;margin:6px 0"/>
       <button style="width:100%;padding:12px;background:#ff6b00;color:white;border:none;border-radius:8px;">
@@ -352,6 +378,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
 
 
