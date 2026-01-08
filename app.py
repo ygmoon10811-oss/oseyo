@@ -802,6 +802,11 @@ def logout():
     resp.delete_cookie(COOKIE_NAME, path="/")
     return resp
 
+@app.get("/whoami")
+def whoami(request: Request):
+    token = request.cookies.get(COOKIE_NAME)
+    u = get_user_by_token(token)
+    return {"cookie": bool(token), "user": u}
 
 @app.get("/map")
 def map_h():
@@ -910,4 +915,5 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
