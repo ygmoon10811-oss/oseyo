@@ -215,13 +215,15 @@ def set_test_cookie():
 async def auth_guard(request: Request, call_next):
     path = request.url.path
 
+    # ✅ 끝 슬래시 제거해서 비교 (/signup/ -> /signup)
+    norm = path.rstrip("/") or "/"
+
     # 🔓 공개 경로
-    if path in ("/login", "/signup", "/logout", "/whoami", "/health",
-            "/debug_db", "/debug_cookie", "/set_test_cookie", "/login_debug"):
+    if norm in PUBLIC_PATHS:
         return await call_next(request)
 
-    # 🔐 보호는 /app 진입만
-    if path == "/app" or path.startswith("/app?"):
+    # 🔐 /app 진입만 보호 (Gradio 내부 요청은 막지 않음)
+    if norm == "/app":
         token = request.cookies.get(COOKIE_NAME)
         if not token or not get_user_by_token(token):
             return RedirectResponse("/login", status_code=303)
@@ -413,6 +415,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
 
 
