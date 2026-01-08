@@ -218,7 +218,7 @@ async def auth_guard(request: Request, call_next):
     # 🔓 공개 경로
     if path in ("/login", "/signup", "/logout", "/whoami", "/health",
             "/debug_db", "/debug_cookie", "/set_test_cookie", "/login_debug"):
-    return await call_next(request)
+        return await call_next(request)
 
     # 🔐 보호는 /app 진입만
     if path == "/app" or path.startswith("/app?"):
@@ -413,6 +413,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
 
 
