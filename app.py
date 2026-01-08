@@ -104,9 +104,17 @@ def check_pw(pw: str, stored: str) -> bool:
 def new_session(user_id: str) -> str:
     token = uuid.uuid4().hex
     exp = now_kst() + timedelta(hours=SESSION_HOURS)
-    with db_conn() as con:
-        con.execute("INSERT INTO sessions VALUES (?,?,?)", (token, user_id, exp.isoformat()))
-        con.commit()
+    try:
+        with db_conn() as con:
+            con.execute(
+                "INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)",
+                (token, user_id, exp.isoformat()),
+            )
+            con.commit()
+        print("[SESSION] inserted:", token[:8], "user:", user_id, "exp:", exp.isoformat())
+    except Exception as e:
+        print("[SESSION][ERROR]", repr(e))
+        raise
     return token
 
 
@@ -156,6 +164,10 @@ def debug_cookie(request: Request):
         "cookie_name": COOKIE_NAME,
         "cookie_value": request.cookies.get(COOKIE_NAME),
     }
+    
+@app.get("/ping_login")
+def ping_login():
+    return {"ok": True, "msg": "login routes alive"}
 
 
 @app.get("/set_test_cookie")
@@ -378,6 +390,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
 
 
