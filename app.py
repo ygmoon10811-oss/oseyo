@@ -128,18 +128,18 @@ def get_user_by_token(token: str):
         return {"id": u[0], "username": u[1]}
 
 
-def set_auth_cookie(resp, token: str, request: Request):
-    is_https = request.headers.get("x-forwarded-proto") == "https"
+def set_auth_cookie(resp, token: str):
     resp.set_cookie(
-        COOKIE_NAME,
-        token,
+        key=COOKIE_NAME,
+        value=token,
         httponly=True,
         samesite="lax",
         path="/",
-        secure=is_https,
+        secure=False,              # 🔥 강제
         max_age=SESSION_HOURS * 3600,
     )
     return resp
+
 
 
 # =========================================================
@@ -157,10 +157,10 @@ async def auth_guard(request: Request, call_next):
         return await call_next(request)
 
     # 보호 대상
-    if path.startswith("/app") or path.startswith("/map") or path == "/":
-        token = request.cookies.get(COOKIE_NAME)
-        if not get_user_by_token(token):
-            return RedirectResponse("/login", status_code=303)
+if path == "/app" or path.startswith("/app?"):
+    token = request.cookies.get(COOKIE_NAME)
+    if not get_user_by_token(token):
+        return RedirectResponse("/login", status_code=303)
 
     return await call_next(request)
 
@@ -202,18 +202,10 @@ def login_page():
 
 
 @app.post("/login")
-def login(request: Request, username: str = Form(...), password: str = Form(...)):
-    with db_conn() as con:
-        row = con.execute(
-            "SELECT id, pw_hash FROM users WHERE username=?", (username.strip(),)
-        ).fetchone()
-
-    if not row or not check_pw(password, row[1]):
-        return RedirectResponse("/login", status_code=303)
-
-    token = new_session(row[0])
+def login(username: str = Form(...), password: str = Form(...)):
+    ...
     resp = RedirectResponse("/app", status_code=303)
-    return set_auth_cookie(resp, token, request)
+    return set_auth_cookie(resp, token)
 
 
 @app.get("/signup")
@@ -231,21 +223,10 @@ def signup_page():
 
 
 @app.post("/signup")
-def signup(request: Request, username: str = Form(...), password: str = Form(...)):
-    uid = uuid.uuid4().hex
-    try:
-        with db_conn() as con:
-            con.execute(
-                "INSERT INTO users VALUES (?,?,?,?)",
-                (uid, username.strip(), make_pw_hash(password), now_kst().isoformat()),
-            )
-            con.commit()
-    except sqlite3.IntegrityError:
-        return RedirectResponse("/signup", status_code=303)
-
-    token = new_session(uid)
+def signup(username: str = Form(...), password: str = Form(...)):
+    ...
     resp = RedirectResponse("/app", status_code=303)
-    return set_auth_cookie(resp, token, request)
+    return set_auth_cookie(resp, token)
 
 
 @app.get("/logout")
@@ -273,3 +254,4 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
