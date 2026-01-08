@@ -201,10 +201,42 @@ def login_page():
 
 
 @app.post("/login")
-def login(username: str = Form(...), password: str = Form(...)):
-    ...
-    resp = RedirectResponse("/app", status_code=303)
-    return set_auth_cookie(resp, token)
+def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    username = (username or "").strip()
+
+    with db_conn() as con:
+        row = con.execute(
+            "SELECT id, pw_hash FROM users WHERE username=?", (username,)
+        ).fetchone()
+
+    if (not row) or (not check_pw(password, row[1])):
+        return HTMLResponse(
+            "<script>alert('아이디/비밀번호가 올바르지 않습니다'); location.href='/login';</script>",
+            status_code=401,
+        )
+
+    token = new_session(row[0])
+
+    # ✅ 200 응답에서 먼저 쿠키 notice 박고, 그 다음 /app으로 이동
+    html_ok = """
+    <!doctype html><html><head>
+      <meta charset="utf-8"/>
+      <meta http-equiv="refresh" content="0; url=/app">
+    </head><body>
+      로그인 성공. 이동 중...
+    </body></html>
+    """
+    resp = HTMLResponse(html_ok, status_code=200)
+    resp.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        secure=False,  # ✅ Render에서 일لاحظ
+        max_age=SESSION_HOURS * 3600,
+    )
+    return resp
 
 
 @app.get("/signup")
@@ -222,10 +254,47 @@ def signup_page():
 
 
 @app.post("/signup")
-def signup(username: str = Form(...), password: str = Form(...)):
-    ...
-    resp = RedirectResponse("/app", status_code=303)
-    return set_auth_cookie(resp, token)
+def signup(request: Request, username: str = Form(...), password: str = Form(...)):
+    username = (username or "").strip()
+    if not username or not password:
+        return RedirectResponse("/signup", status_code=303)
+
+    uid = uuid.uuid4().hex
+    try:
+        with db_conn() as con:
+            con.execute(
+                "INSERT INTO users VALUES (?,?,?,?)",
+                (uid, username, make_pw_hash(password), now_kst().isoformat())
+            )
+            con.commit()
+    except sqlite3.IntegrityError:
+        return HTMLResponse(
+            "<script>alert('이미 존재하는 아이디입니다'); location.href='/signup';</script>",
+            status_code=409,
+        )
+
+    token = new_session(uid)
+
+    html_ok = """
+    <!doctype html><html><head>
+      <meta charset="utf-8"/>
+      <meta http-equiv="refresh" content="0; url=/app">
+    </head><body>
+      가입/로그인 성공. 이동 중...
+    </body></html>
+    """
+    resp = HTMLResponse(html_ok, status_code=200)
+    resp.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        secure=False,
+        max_age=SESSION_HOURS * 3600,
+    )
+    return resp
+
 
 
 @app.get("/logout")
@@ -253,5 +322,6 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 # =========================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
 
