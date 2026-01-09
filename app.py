@@ -94,7 +94,7 @@ def init_db():
         except Exception:
             pass
 
-        # 즐겨찾기 (전역 TOP10 기반)
+        # 즐겨찾기
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS favs (
@@ -443,17 +443,22 @@ button.selected {
   text-align: left !important;
 }
 .small-muted { color:#777; font-size:12px; margin-top:-6px; }
+
+/* ===== Desktop(웹)에서만 카드 폭 제한: 모바일은 그대로 ===== */
+.list-wrap { padding: 0 24px 80px 24px; }
+
+@media (min-width: 900px) {
+  .list-wrap { max-width: 560px; margin: 0 auto; }
+  .header-row { max-width: 560px; margin: 0 auto; }
+  .tabs { max-width: 560px; margin-left: auto; margin-right: auto; }
+  #map_iframe { max-width: 560px; margin: 0 auto; display: block; }
+}
 """
 
 
 # =========================================================
 # 5) 이벤트/즐겨찾기 로직
 # =========================================================
-def map_iframe_html() -> str:
-    # iframe 캐시 방지(이벤트 생성/삭제 직후 자동 갱신용)
-    ts = int(now_kst().timestamp())
-    return f'<iframe id="map_iframe" src="/map?ts={ts}" style="width:100%;height:70vh;border:none;border-radius:16px;"></iframe>'
-
 def get_list_html():
     with db_conn() as con:
         rows = con.execute(
@@ -463,7 +468,7 @@ def get_list_html():
     if not rows:
         return "<div style='text-align:center; padding:100px 20px; color:#999;'>등록된 이벤트가 없습니다.<br>오른쪽 아래 버튼을 눌러 시작해보세요.</div>"
 
-    out = "<div style='padding:0 24px 80px 24px;'>"
+    out = "<div class='list-wrap'>"
     for title, photo, start, addr in rows:
         if photo:
             img_html = f"<img class='event-photo' src='data:image/jpeg;base64,{photo}' />"
@@ -589,7 +594,7 @@ def get_fav_names(limit=50):
             """
             SELECT name FROM favs
             WHERE name IS NOT NULL AND TRIM(name) != ''
-            ORDER BY count DESC, updated_at DESC
+            ORDER BY updated_at DESC, count DESC
             LIMIT ?
             """,
             (limit,),
@@ -607,16 +612,15 @@ def fav_buttons_update(favs):
 
 def add_fav_only(name: str, request: gr.Request):
     user = get_current_user(request)
+    favs = get_top_favs(10)
+    fav_names = get_fav_names(50)
+
     if not user:
-        favs = get_top_favs(10)
-        names = get_fav_names(50)
-        return "로그인이 필요합니다.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
+        return "로그인이 필요합니다.", gr.update(choices=fav_names, value=None), *fav_buttons_update(favs)
 
     name = (name or "").strip()
     if not name:
-        favs = get_top_favs(10)
-        names = get_fav_names(50)
-        return "활동명을 입력해 주세요.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
+        return "활동명을 입력해 주세요.", gr.update(choices=fav_names, value=None), *fav_buttons_update(favs)
 
     with db_conn() as con:
         con.execute(
@@ -629,29 +633,28 @@ def add_fav_only(name: str, request: gr.Request):
         con.commit()
 
     favs = get_top_favs(10)
-    names = get_fav_names(50)
-    return "✅ 즐겨찾기에 추가되었습니다.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
+    fav_names = get_fav_names(50)
+    return "✅ 즐겨찾기에 추가되었습니다.", gr.update(choices=fav_names, value=None), *fav_buttons_update(favs)
 
 def delete_fav(name: str, request: gr.Request):
     user = get_current_user(request)
+    favs = get_top_favs(10)
+    fav_names = get_fav_names(50)
+
     if not user:
-        favs = get_top_favs(10)
-        names = get_fav_names(50)
-        return "로그인이 필요합니다.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
+        return "로그인이 필요합니다.", gr.update(choices=fav_names, value=None), *fav_buttons_update(favs)
 
     name = (name or "").strip()
     if not name:
-        favs = get_top_favs(10)
-        names = get_fav_names(50)
-        return "삭제할 즐겨찾기를 선택해 주세요.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
+        return "삭제할 즐겨찾기를 선택해 주세요.", gr.update(choices=fav_names, value=None), *fav_buttons_update(favs)
 
     with db_conn() as con:
         con.execute("DELETE FROM favs WHERE name = ?", (name,))
         con.commit()
 
     favs = get_top_favs(10)
-    names = get_fav_names(50)
-    return "✅ 즐겨찾기를 삭제했습니다.", *fav_buttons_update(favs), gr.update(choices=names, value=None)
+    fav_names = get_fav_names(50)
+    return "✅ 즐겨찾기를 삭제했습니다.", gr.update(choices=fav_names, value=None), *fav_buttons_update(favs)
 
 
 # =========================================================
@@ -659,6 +662,13 @@ def delete_fav(name: str, request: gr.Request):
 # =========================================================
 now_dt = now_kst()
 later_dt = now_dt + timedelta(hours=2)
+
+def make_map_iframe():
+    ts = int(now_kst().timestamp() * 1000)
+    return f'<iframe id="map_iframe" src="/map?ts={ts}" style="width:100%;height:70vh;border:none;border-radius:16px;"></iframe>'
+
+def refresh_list_and_map():
+    return get_list_html(), make_map_iframe()
 
 with gr.Blocks(css=CSS, title="오세요") as demo:
     search_state = gr.State([])
@@ -676,7 +686,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             explore_html = gr.HTML()
             refresh_btn = gr.Button("🔄 목록 새로고침", variant="secondary", size="sm")
         with gr.Tab("지도"):
-            map_html = gr.HTML(map_iframe_html())
+            map_html = gr.HTML(value=make_map_iframe())
 
     with gr.Row(elem_classes=["fab-wrapper"]):
         fab = gr.Button("+")
@@ -701,15 +711,11 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
                     fav_add_btn = gr.Button("추가", variant="secondary")
                 fav_msg = gr.Markdown("")
 
-                # ✅ 즐겨찾기 삭제 UI 추가
+                # --- 즐겨찾기 삭제 UI 추가 ---
                 with gr.Row():
-                    fav_del_dd = gr.Dropdown(
-                        label="즐겨찾기 삭제",
-                        choices=[],
-                        value=None,
-                        interactive=True,
-                    )
+                    fav_del_sel = gr.Dropdown(label="즐겨찾기 삭제", choices=[], interactive=True)
                     fav_del_btn = gr.Button("삭제", variant="stop")
+                fav_del_msg = gr.Markdown("")
 
                 gr.Markdown("---")
 
@@ -753,19 +759,20 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
         favs = get_top_favs(10)
         fav_names = get_fav_names(50)
         return (
-            gr.update(visible=True),
-            gr.update(visible=True),
-            gr.update(choices=my_events, value=None),
-            "",
-            *fav_buttons_update(favs),
-            "",
-            gr.update(choices=fav_names, value=None),
+            gr.update(visible=True),              # overlay
+            gr.update(visible=True),              # modal_m
+            gr.update(choices=my_events, value=None),  # my_event_list
+            "",                                   # del_msg
+            *fav_buttons_update(favs),            # fav_btns(10)
+            "",                                   # fav_msg
+            gr.update(choices=fav_names, value=None),  # fav_del_sel
+            ""                                    # fav_del_msg
         )
 
     fab.click(
         open_main_modal,
         None,
-        [overlay, modal_m, my_event_list, del_msg] + fav_btns + [fav_msg, fav_del_dd],
+        [overlay, modal_m, my_event_list, del_msg] + fav_btns + [fav_msg, fav_del_sel, fav_del_msg],
     )
 
     def close_all():
@@ -780,18 +787,18 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     for b in fav_btns:
         b.click(fn=set_title_from_fav, inputs=b, outputs=t_in)
 
-    # ✅ 즐겨찾기 추가 -> 버튼 10개 + 삭제드롭다운까지 갱신
+    # 즐겨찾기 추가 -> (메시지, 삭제드롭다운 갱신, 버튼 10개 갱신)
     fav_add_btn.click(
         fn=add_fav_only,
         inputs=[fav_new],
-        outputs=[fav_msg] + fav_btns + [fav_del_dd],
+        outputs=[fav_msg, fav_del_sel] + fav_btns,
     )
 
-    # ✅ 즐겨찾기 삭제
+    # 즐겨찾기 삭제 -> (메시지, 삭제드롭다운 갱신, 버튼 10개 갱신)
     fav_del_btn.click(
         fn=delete_fav,
-        inputs=[fav_del_dd],
-        outputs=[fav_msg] + fav_btns + [fav_del_dd],
+        inputs=[fav_del_sel],
+        outputs=[fav_del_msg, fav_del_sel] + fav_btns,
     )
 
     addr_btn.click(lambda: gr.update(visible=True), None, modal_s)
@@ -826,37 +833,25 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     s_final.click(confirm_k, [q_res, search_state], [addr_v, selected_addr, modal_s])
 
-    # ✅ 저장 시: 탐색 리스트 갱신 + 모달 닫기 + 즐겨찾기 갱신 + 지도 iframe 강제 갱신
+    # 저장 후: 탐색 목록 + 지도 iframe 자동 갱신 + 모달 닫기 + 즐겨찾기 버튼 갱신
     def save_and_close(title, img, start, end, addr, req: gr.Request):
         _ = save_data(title, img, start, end, addr, req)
         html_list = get_list_html()
         favs = get_top_favs(10)
-        fav_names = get_fav_names(50)
-        return (
-            html_list,
-            map_iframe_html(),               # ✅ 지도 즉시 갱신
-            gr.update(visible=False),
-            gr.update(visible=False),
-            *fav_buttons_update(favs),
-            gr.update(choices=fav_names, value=None),
-        )
+        return html_list, make_map_iframe(), gr.update(visible=False), gr.update(visible=False), *fav_buttons_update(favs)
 
     m_save.click(
         save_and_close,
         [t_in, img_in, s_in, e_in, selected_addr],
-        [explore_html, map_html, overlay, modal_m] + fav_btns + [fav_del_dd],
+        [explore_html, map_html, overlay, modal_m] + fav_btns,
     )
 
-    # ✅ 이벤트 삭제 시: 탐색 리스트 갱신 + 지도 갱신
-    def delete_then_refresh_map(event_id, req: gr.Request):
-        msg, dd_upd = delete_my_event(event_id, req)
-        return msg, dd_upd, get_list_html(), map_iframe_html()
-
+    # 이벤트 삭제 후: 탐색+지도 같이 갱신
     del_btn.click(
-        delete_then_refresh_map,
+        delete_my_event,
         [my_event_list],
-        [del_msg, my_event_list, explore_html, map_html],
-    )
+        [del_msg, my_event_list],
+    ).then(refresh_list_and_map, None, [explore_html, map_html])
 
 
 # =========================================================
@@ -1010,69 +1005,399 @@ def signup_page():
   <title>오세요 - 회원가입</title>
   <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-    body {{ font-family:Pretendard, system-ui; background:#fff; margin:0; padding:0;
-      display:flex; justify-content:center; align-items:center; min-height:100vh; }}
-    .wrap {{ width:100%; max-width:390px; padding:20px; }}
-    h2 {{ margin:0 0 12px 0; font-size:22px; }}
-    .muted {{ color:#777; font-size:13px; margin-bottom:18px; }}
-    input, select {{ width:100%; padding:12px; margin:8px 0; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; font-size:14px; }}
-    input:focus, select:focus {{ outline:none; border-color:#111; }}
-    .row {{ display:flex; gap:8px; }}
+
+    body {{
+      font-family:Pretendard, system-ui;
+      background:#fff; margin:0; padding:0;
+      display:flex; justify-content:center; align-items:flex-start;
+      min-height:100vh;
+    }}
+
+    .wrap {{
+      width:100%;
+      max-width: 420px;
+      padding: 26px 18px 40px 18px;
+      box-sizing:border-box;
+    }}
+
+    .brand {{
+      display:flex; align-items:center; gap:10px;
+      margin-bottom: 18px;
+    }}
+    .logo {{
+      width:34px; height:34px; border-radius:8px;
+      background:#111; display:inline-block;
+    }}
+    .brand h1 {{
+      font-size:18px; margin:0; font-weight:800;
+    }}
+
+    h2 {{
+      text-align:center;
+      margin: 6px 0 16px 0;
+      font-size:16px;
+      font-weight:700;
+      color:#111;
+    }}
+
+    .card {{
+      border:1px solid #eee;
+      border-radius: 14px;
+      padding: 18px;
+    }}
+
+    .sns {{
+      display:flex; justify-content:center; gap:12px;
+      margin: 6px 0 14px 0;
+    }}
+    .sns a {{
+      width:38px; height:38px; border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+      text-decoration:none;
+      font-weight:800;
+      border:1px solid #e8e8e8;
+      color:#111;
+      user-select:none;
+    }}
+    .sns .fb {{ background:#eef3ff; }}
+    .sns .kk {{ background:#fff4a8; }}
+    .sns .nv {{ background:#e7ffe7; }}
+
+    .divider {{
+      height:1px; background:#eee; margin: 14px 0;
+    }}
+
+    label {{
+      display:block;
+      font-size:12px;
+      color:#111;
+      font-weight:700;
+      margin: 12px 0 6px 0;
+    }}
+
+    .hint {{
+      font-size:12px;
+      color:#777;
+      margin-top:6px;
+      line-height:1.35;
+    }}
+
+    input, select {{
+      width:100%;
+      padding:12px;
+      border:1px solid #ddd;
+      border-radius:8px;
+      box-sizing:border-box;
+      font-size:14px;
+      background:#fff;
+    }}
+    input:focus, select:focus {{
+      outline:none;
+      border-color:#111;
+    }}
+
+    .row {{
+      display:flex;
+      gap:8px;
+    }}
     .row > * {{ flex:1; }}
-    .btn {{ width:100%; padding:13px; background:#111; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:700; margin-top:10px; }}
-    .btn2 {{ padding:12px; background:#f0f0f0; color:#111; border:none; border-radius:8px; cursor:pointer; font-weight:700; white-space:nowrap; }}
-    .msg {{ margin-top:10px; font-size:13px; color:#444; }}
+
+    .btn {{
+      width:100%;
+      padding:13px;
+      background:#111;
+      color:#fff;
+      border:none;
+      border-radius:10px;
+      cursor:pointer;
+      font-weight:800;
+      margin-top: 14px;
+      font-size:14px;
+    }}
+
+    .btn2 {{
+      padding:12px;
+      background:#f3f3f3;
+      color:#111;
+      border:1px solid #e6e6e6;
+      border-radius:10px;
+      cursor:pointer;
+      font-weight:800;
+      white-space:nowrap;
+      font-size:13px;
+    }}
+
+    .msg {{
+      margin-top:10px;
+      font-size:13px;
+      color:#444;
+    }}
     .err {{ color:#c00; }}
     .ok {{ color:#0a7; }}
-    a {{ color:#333; }}
-    .debug {{ background:#fff7cc; padding:10px; border-radius:8px; font-size:13px; margin-top:10px; display:none; }}
+
+    .debug {{
+      background:#fff7cc;
+      padding:10px;
+      border-radius:8px;
+      font-size:13px;
+      margin-top:10px;
+      display:none;
+    }}
+
+    /* 약관 박스 */
+    .terms {{
+      border:1px solid #eee;
+      border-radius: 10px;
+      padding: 12px;
+      margin-top: 12px;
+      background: #fafafa;
+    }}
+    .terms .trow {{
+      display:flex;
+      align-items:flex-start;
+      gap:10px;
+      padding: 8px 2px;
+      border-top: 1px solid #eee;
+    }}
+    .terms .trow:first-child {{
+      border-top: none;
+      padding-top: 2px;
+    }}
+    .terms input[type="checkbox"] {{
+      width:18px;
+      height:18px;
+      margin-top:2px;
+    }}
+    .terms .ttext {{
+      font-size:12.5px;
+      color:#222;
+      line-height:1.35;
+    }}
+    .terms .req {{
+      color:#1e6bff;
+      font-weight:800;
+      margin-left:4px;
+      font-size:12px;
+    }}
+    .terms .opt {{
+      color:#999;
+      font-weight:800;
+      margin-left:4px;
+      font-size:12px;
+    }}
+
+    /* 로봇 체크(가짜 UI) */
+    .robot {{
+      border:1px solid #eee;
+      border-radius: 10px;
+      padding: 12px;
+      margin-top: 12px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      background:#fff;
+    }}
+    .robot .left {{
+      display:flex; align-items:center; gap:10px;
+      font-size:13px; color:#111; font-weight:700;
+    }}
+    .robot .badge {{
+      font-size:11px;
+      color:#777;
+      border:1px solid #eee;
+      padding:6px 8px;
+      border-radius:8px;
+    }}
+
+    .footer {{
+      text-align:center;
+      margin-top: 12px;
+      font-size:13px;
+      color:#666;
+    }}
+    .footer a {{
+      color:#111;
+      text-decoration:underline;
+      font-weight:700;
+    }}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h2>회원가입</h2>
-    <div class="muted">이메일 인증 후 가입을 완료해 주세요.</div>
-
-    <div class="row">
-      <input id="email" placeholder="이메일(아이디)" />
-      <button class="btn2" type="button" onclick="sendOtp()">인증메일 받기</button>
+    <div class="brand">
+      <span class="logo"></span>
+      <h1>오세요</h1>
     </div>
-    <input id="otp" placeholder="인증번호 6자리" />
-    <div id="otpMsg" class="msg"></div>
-    <div id="debugBox" class="debug"></div>
 
-    <form method="post" action="/signup" onsubmit="return beforeSubmit();">
-      <input id="usernameHidden" name="username" type="hidden" />
-      <input id="otpHidden" name="otp" type="hidden" />
+    <h2>회원가입</h2>
 
-      <input name="password" type="password" placeholder="비밀번호" required />
-      <input name="name" placeholder="이름" required />
-
-      <div class="row">
-        <select name="gender" required>
-          <option value="">성별 선택</option>
-          <option value="F">여성</option>
-          <option value="M">남성</option>
-          <option value="N">선택안함</option>
-        </select>
-        <input name="birth" type="date" required />
+    <div class="card">
+      <div style="text-align:center; font-size:12px; color:#777; font-weight:700;">
+        SNS계정으로 간편하게 회원가입
+      </div>
+      <div class="sns">
+        <a class="fb" href="javascript:void(0)" title="Facebook">f</a>
+        <a class="kk" href="javascript:void(0)" title="Kakao">톡</a>
+        <a class="nv" href="javascript:void(0)" title="Naver">N</a>
       </div>
 
-      <button class="btn" type="submit">가입완료</button>
-      <p style="margin-top:12px;font-size:13px;color:#666;">
-        이미 계정이 있나요? <a href="/login">로그인</a>
-      </p>
-    </form>
+      <div class="divider"></div>
+
+      <!-- 이메일 + 도메인 선택 + 인증 -->
+      <label>이메일</label>
+      <div class="row">
+        <input id="emailLocal" placeholder="이메일" autocomplete="email" />
+        <select id="emailDomain" aria-label="domain">
+          <option value="">선택해주세요</option>
+          <option value="gmail.com">gmail.com</option>
+          <option value="naver.com">naver.com</option>
+          <option value="daum.net">daum.net</option>
+          <option value="hanmail.net">hanmail.net</option>
+          <option value="outlook.com">outlook.com</option>
+          <option value="직접입력">직접입력</option>
+        </select>
+      </div>
+      <input id="emailDomainCustom" placeholder="도메인 직접입력 (예: example.com)" style="display:none; margin-top:8px;" />
+
+      <button class="btn2" type="button" style="width:100%; margin-top:8px;" onclick="sendOtp()">이메일 인증하기</button>
+
+      <input id="otp" placeholder="인증번호 6자리" inputmode="numeric" />
+      <div id="otpMsg" class="msg"></div>
+      <div id="debugBox" class="debug"></div>
+
+      <form method="post" action="/signup" onsubmit="return beforeSubmit();">
+        <!-- 서버로 보내는 값은 기존대로 hidden 유지 -->
+        <input id="usernameHidden" name="username" type="hidden" />
+        <input id="otpHidden" name="otp" type="hidden" />
+
+        <label>비밀번호</label>
+        <div class="hint">영문, 숫자를 포함한 8자 이상의 비밀번호를 입력해주세요.</div>
+        <input id="pw" name="password" type="password" placeholder="비밀번호" required />
+
+        <label>비밀번호 확인</label>
+        <input id="pw2" type="password" placeholder="비밀번호 확인" required />
+        <div id="pwMsg" class="msg"></div>
+
+        <!-- 기존 가입 필드(기능/요구사항 유지) -->
+        <label>이름</label>
+        <input name="name" placeholder="이름" required />
+
+        <div class="row">
+          <div>
+            <label>성별</label>
+            <select name="gender" required>
+              <option value="">성별 선택</option>
+              <option value="F">여성</option>
+              <option value="M">남성</option>
+              <option value="N">선택안함</option>
+            </select>
+          </div>
+          <div>
+            <label>생년월일</label>
+            <input name="birth" type="date" required />
+          </div>
+        </div>
+
+        <!-- 약관동의(프론트에서만 필수 체크 검사) -->
+        <label>약관동의</label>
+        <div class="terms">
+          <div class="trow">
+            <input id="t_all" type="checkbox" />
+            <div class="ttext"><b>전체동의</b> <span style="color:#777;font-weight:600;">(선택항목에 대한 동의 포함)</span></div>
+          </div>
+
+          <div class="trow">
+            <input id="t_age" type="checkbox" />
+            <div class="ttext">만 14세 이상입니다<span class="req">(필수)</span></div>
+          </div>
+
+          <div class="trow">
+            <input id="t_terms" type="checkbox" />
+            <div class="ttext">이용약관<span class="req">(필수)</span></div>
+          </div>
+
+          <div class="trow">
+            <input id="t_priv" type="checkbox" />
+            <div class="ttext">개인정보 처리방침 동의<span class="req">(필수)</span></div>
+          </div>
+
+          <div class="trow">
+            <input id="t_mkt" type="checkbox" />
+            <div class="ttext">이벤트/프로모션 알림 동의<span class="opt">(선택)</span></div>
+          </div>
+        </div>
+
+        <!-- 로봇(실제 캡차 아님: UI 체크만) -->
+        <div class="robot">
+          <div class="left">
+            <input id="robot" type="checkbox" />
+            <div>로봇이 아닙니다.</div>
+          </div>
+          <div class="badge">reCAPTCHA UI</div>
+        </div>
+
+        <button class="btn" type="submit">회원가입하기</button>
+
+        <div class="footer">
+          이미 아이디가 있으신가요? <a href="/login">로그인</a>
+        </div>
+      </form>
+    </div>
   </div>
 
 <script>
+  function buildEmail() {{
+    const local = (document.getElementById("emailLocal").value || "").trim();
+    const domainSel = (document.getElementById("emailDomain").value || "").trim();
+    const domainCustom = (document.getElementById("emailDomainCustom").value || "").trim();
+
+    // 사용자가 이미 @ 포함해서 입력하면 그대로 사용
+    if (local.includes("@")) return local;
+
+    // @가 없으면 도메인 조합 시도
+    let domain = domainSel;
+    if (domainSel === "직접입력") domain = domainCustom;
+
+    if (!local) return "";
+    if (!domain) return local; // 도메인 선택 안 했으면 기존처럼 그냥 local(사용자가 @ 포함해 입력하라는 의미)
+    return local + "@" + domain;
+  }}
+
+  // 도메인 직접입력 토글
+  document.getElementById("emailDomain").addEventListener("change", () => {{
+    const v = document.getElementById("emailDomain").value;
+    const custom = document.getElementById("emailDomainCustom");
+    if (v === "직접입력") {{
+      custom.style.display = "block";
+    }} else {{
+      custom.style.display = "none";
+      custom.value = "";
+    }}
+  }});
+
+  // 전체동의 로직
+  const all = document.getElementById("t_all");
+  const items = ["t_age","t_terms","t_priv","t_mkt"].map(id => document.getElementById(id));
+
+  all.addEventListener("change", () => {{
+    items.forEach(ch => ch.checked = all.checked);
+  }});
+
+  items.forEach(ch => {{
+    ch.addEventListener("change", () => {{
+      const every = items.every(x => x.checked);
+      all.checked = every;
+    }});
+  }});
+
   async function sendOtp() {{
-    const email = document.getElementById("email").value.trim();
     const msgEl = document.getElementById("otpMsg");
     const dbg = document.getElementById("debugBox");
     msgEl.textContent = "";
     dbg.style.display = "none";
     dbg.textContent = "";
+
+    const email = buildEmail();
 
     if (!email) {{
       msgEl.innerHTML = '<span class="err">이메일을 입력해 주세요.</span>';
@@ -1102,10 +1427,37 @@ def signup_page():
   }}
 
   function beforeSubmit() {{
-    const email = document.getElementById("email").value.trim();
-    const otp = document.getElementById("otp").value.trim();
+    const email = buildEmail();
+    const otp = (document.getElementById("otp").value || "").trim();
     document.getElementById("usernameHidden").value = email;
     document.getElementById("otpHidden").value = otp;
+
+    // 비번 확인(프론트만)
+    const pw = document.getElementById("pw").value || "";
+    const pw2 = document.getElementById("pw2").value || "";
+    const pwMsg = document.getElementById("pwMsg");
+    pwMsg.textContent = "";
+    if (pw !== pw2) {{
+      pwMsg.innerHTML = '<span class="err">비밀번호가 일치하지 않습니다.</span>';
+      return false;
+    }}
+
+    // 약관 필수 체크(프론트만)
+    const t_age = document.getElementById("t_age").checked;
+    const t_terms = document.getElementById("t_terms").checked;
+    const t_priv = document.getElementById("t_priv").checked;
+    if (!(t_age && t_terms && t_priv)) {{
+      alert("필수 약관에 동의해 주세요.");
+      return false;
+    }}
+
+    // 로봇 체크(프론트만)
+    const robot = document.getElementById("robot").checked;
+    if (!robot) {{
+      alert("로봇이 아님을 확인해 주세요.");
+      return false;
+    }}
+
     return true;
   }}
 </script>
@@ -1114,53 +1466,6 @@ def signup_page():
     """
     return HTMLResponse(html_content)
 
-@app.post("/signup")
-def signup(
-    username: str = Form(...),
-    otp: str = Form(...),
-    password: str = Form(...),
-    name: str = Form(...),
-    gender: str = Form(...),
-    birth: str = Form(...),
-):
-    email = normalize_email(username)
-
-    if not verify_email_otp(email, otp):
-        return HTMLResponse("<script>alert('이메일 인증번호가 올바르지 않거나 만료되었습니다.');history.back();</script>")
-
-    uid = uuid.uuid4().hex
-    try:
-        with db_conn() as con:
-            con.execute(
-                """
-                INSERT INTO users (id, username, pw_hash, name, gender, birth, email_verified_at, created_at)
-                VALUES (?,?,?,?,?,?,?,?)
-                """,
-                (
-                    uid,
-                    email,
-                    make_pw_hash(password),
-                    (name or "").strip(),
-                    (gender or "").strip(),
-                    (birth or "").strip(),
-                    now_kst().isoformat(timespec="seconds"),
-                    now_kst().isoformat(timespec="seconds"),
-                ),
-            )
-            con.commit()
-    except Exception:
-        return HTMLResponse("<script>alert('이미 존재하는 이메일이거나 가입 정보가 올바르지 않습니다.');history.back();</script>")
-
-    token = new_session(uid)
-    resp = RedirectResponse("/app", status_code=303)
-    resp.set_cookie(
-        key=COOKIE_NAME,
-        value=token,
-        httponly=True,
-        max_age=SESSION_HOURS * 3600,
-        samesite="lax",
-    )
-    return resp
 
 @app.get("/logout")
 def logout():
@@ -1174,6 +1479,7 @@ def logout():
 # =========================================================
 @app.get("/map")
 def map_h():
+    # ts 파라미터는 캐시 무효화 용도(사용만 하고 무시해도 됨)
     with db_conn() as con:
         rows = con.execute("SELECT title, photo, lat, lng, addr, start FROM events").fetchall()
 
