@@ -36,6 +36,10 @@ SESSION_HOURS = 24 * 7  # 7일
 KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "").strip()
 KAKAO_JAVASCRIPT_KEY = os.getenv("KAKAO_JAVASCRIPT_KEY", "").strip()
 
+# ---- reCAPTCHA v2(체크박스) ----
+RECAPTCHA_SITE_KEY = os.getenv("RECAPTCHA_SITE_KEY", "").strip()
+RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY", "").strip()
+
 # ---- 이메일 OTP 설정 ----
 EMAIL_OTP_TTL_MINUTES = 10
 ALLOW_EMAIL_OTP_DEBUG = os.getenv("ALLOW_EMAIL_OTP_DEBUG", "1").strip()
@@ -222,6 +226,37 @@ def get_current_user(request: gr.Request):
     token = request.cookies.get(COOKIE_NAME)
     return get_user_by_token(token)
 
+def verify_recaptcha_v2(token: str, remoteip: str | None = None) -> bool:
+    """
+    Google reCAPTCHA v2 checkbox server-side verification
+    - 토큰(token): form의 g-recaptcha-response
+    - remoteip: 선택(있으면 같이 보냄)
+    """
+    # 개발/로컬에서 키 없으면 우회(원하면 False로 바꿔도 됨)
+    if not RECAPTCHA_SECRET_KEY:
+        return True
+
+    token = (token or "").strip()
+    if not token:
+        return False
+
+    data = {
+        "secret": RECAPTCHA_SECRET_KEY,
+        "response": token,
+    }
+    if remoteip:
+        data["remoteip"] = remoteip
+
+    try:
+        r = requests.post(
+            "https://www.google.com/recaptcha/api/siteverify",
+            data=data,
+            timeout=10,
+        )
+        j = r.json()
+        return bool(j.get("success"))
+    except Exception:
+        return False
 
 # =========================================================
 # 3) 이메일 OTP 유틸
@@ -996,6 +1031,9 @@ async def send_email_otp(request: Request):
 
 @app.get("/signup")
 def signup_page():
+    # site key가 없으면(개발중) 캡차 대신 체크박스 UI만 보여줌
+    use_real_captcha = bool(RECAPTCHA_SITE_KEY)
+
     html_content = f"""
 <!doctype html>
 <html>
@@ -1144,7 +1182,6 @@ def signup_page():
       display:none;
     }}
 
-    /* 약관 박스 */
     .terms {{
       border:1px solid #eee;
       border-radius: 10px;
@@ -1186,8 +1223,7 @@ def signup_page():
       font-size:12px;
     }}
 
-    /* 로봇 체크(가짜 UI) */
-    .robot {{
+    .robotFallback {{
       border:1px solid #eee;
       border-radius: 10px;
       padding: 12px;
@@ -1197,11 +1233,11 @@ def signup_page():
       justify-content:space-between;
       background:#fff;
     }}
-    .robot .left {{
+    .robotFallback .left {{
       display:flex; align-items:center; gap:10px;
       font-size:13px; color:#111; font-weight:700;
     }}
-    .robot .badge {{
+    .robotFallback .badge {{
       font-size:11px;
       color:#777;
       border:1px solid #eee;
@@ -1220,7 +1256,22 @@ def signup_page():
       text-decoration:underline;
       font-weight:700;
     }}
+
+    /* 이메일 row에서 @ 표시 */
+    .at {{
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      width:40px;
+      border:1px solid #ddd;
+      border-radius:8px;
+      font-weight:800;
+      color:#666;
+      background:#fafafa;
+    }}
   </style>
+
+  {"<script src='https://www.google.com/recaptcha/api.js' async defer></script>" if use_real_captcha else ""}
 </head>
 <body>
   <div class="wrap">
@@ -1243,12 +1294,13 @@ def signup_page():
 
       <div class="divider"></div>
 
-      <!-- 이메일 + 도메인 선택 + 인증 -->
+      <!-- 이메일: 아이디 / 도메인 완전 분리 -->
       <label>이메일</label>
       <div class="row">
-        <input id="emailLocal" placeholder="이메일" autocomplete="email" />
+        <input id="emailLocal" placeholder="아이디" autocomplete="email" />
+        <div class="at">@</div>
         <select id="emailDomain" aria-label="domain">
-          <option value="">선택해주세요</option>
+          <option value="">도메인 선택</option>
           <option value="gmail.com">gmail.com</option>
           <option value="naver.com">naver.com</option>
           <option value="daum.net">daum.net</option>
@@ -1266,7 +1318,7 @@ def signup_page():
       <div id="debugBox" class="debug"></div>
 
       <form method="post" action="/signup" onsubmit="return beforeSubmit();">
-        <!-- 서버로 보내는 값은 기존대로 hidden 유지 -->
+        <!-- 서버로 보내는 값: 기존 로직 유지 -->
         <input id="usernameHidden" name="username" type="hidden" />
         <input id="otpHidden" name="otp" type="hidden" />
 
@@ -1278,7 +1330,6 @@ def signup_page():
         <input id="pw2" type="password" placeholder="비밀번호 확인" required />
         <div id="pwMsg" class="msg"></div>
 
-        <!-- 기존 가입 필드(기능/요구사항 유지) -->
         <label>이름</label>
         <input name="name" placeholder="이름" required />
 
@@ -1298,7 +1349,6 @@ def signup_page():
           </div>
         </div>
 
-        <!-- 약관동의(프론트에서만 필수 체크 검사) -->
         <label>약관동의</label>
         <div class="terms">
           <div class="trow">
@@ -1327,14 +1377,19 @@ def signup_page():
           </div>
         </div>
 
-        <!-- 로봇(실제 캡차 아님: UI 체크만) -->
-        <div class="robot">
+        <!-- ✅ 진짜 reCAPTCHA v2 -->
+        {"<div style='margin-top:12px; display:flex; justify-content:center;'><div class='g-recaptcha' data-sitekey='" + RECAPTCHA_SITE_KEY + "'></div></div>" if use_real_captcha else ""}
+
+        <!-- (개발중: 사이트키 없으면 UI 체크박스 대체) -->
+        {"""
+        <div class="robotFallback">
           <div class="left">
-            <input id="robot" type="checkbox" />
+            <input id="robotFallback" type="checkbox" />
             <div>로봇이 아닙니다.</div>
           </div>
-          <div class="badge">reCAPTCHA UI</div>
+          <div class="badge">reCAPTCHA 미설정</div>
         </div>
+        """ if not use_real_captcha else ""}
 
         <button class="btn" type="submit">회원가입하기</button>
 
@@ -1346,23 +1401,6 @@ def signup_page():
   </div>
 
 <script>
-  function buildEmail() {{
-    const local = (document.getElementById("emailLocal").value || "").trim();
-    const domainSel = (document.getElementById("emailDomain").value || "").trim();
-    const domainCustom = (document.getElementById("emailDomainCustom").value || "").trim();
-
-    // 사용자가 이미 @ 포함해서 입력하면 그대로 사용
-    if (local.includes("@")) return local;
-
-    // @가 없으면 도메인 조합 시도
-    let domain = domainSel;
-    if (domainSel === "직접입력") domain = domainCustom;
-
-    if (!local) return "";
-    if (!domain) return local; // 도메인 선택 안 했으면 기존처럼 그냥 local(사용자가 @ 포함해 입력하라는 의미)
-    return local + "@" + domain;
-  }}
-
   // 도메인 직접입력 토글
   document.getElementById("emailDomain").addEventListener("change", () => {{
     const v = document.getElementById("emailDomain").value;
@@ -1375,18 +1413,34 @@ def signup_page():
     }}
   }});
 
+  function buildEmailStrict() {{
+    const local = (document.getElementById("emailLocal").value || "").trim();
+    const domainSel = (document.getElementById("emailDomain").value || "").trim();
+    const domainCustom = (document.getElementById("emailDomainCustom").value || "").trim();
+
+    // 아이디 입력란에 @ 넣는 것 금지
+    if (!local) return {{ ok:false, msg:"이메일 아이디를 입력해 주세요." }};
+    if (local.includes("@")) return {{ ok:false, msg:"아이디 칸에는 @ 없이 입력해 주세요." }};
+
+    let domain = domainSel;
+    if (!domain) return {{ ok:false, msg:"도메인을 선택해 주세요." }};
+    if (domainSel === "직접입력") {{
+      if (!domainCustom) return {{ ok:false, msg:"도메인 직접입력을 입력해 주세요." }};
+      domain = domainCustom;
+    }}
+
+    return {{ ok:true, email: local + "@" + domain }};
+  }}
+
   // 전체동의 로직
   const all = document.getElementById("t_all");
   const items = ["t_age","t_terms","t_priv","t_mkt"].map(id => document.getElementById(id));
-
   all.addEventListener("change", () => {{
     items.forEach(ch => ch.checked = all.checked);
   }});
-
   items.forEach(ch => {{
     ch.addEventListener("change", () => {{
-      const every = items.every(x => x.checked);
-      all.checked = every;
+      all.checked = items.every(x => x.checked);
     }});
   }});
 
@@ -1397,10 +1451,9 @@ def signup_page():
     dbg.style.display = "none";
     dbg.textContent = "";
 
-    const email = buildEmail();
-
-    if (!email) {{
-      msgEl.innerHTML = '<span class="err">이메일을 입력해 주세요.</span>';
+    const built = buildEmailStrict();
+    if (!built.ok) {{
+      msgEl.innerHTML = '<span class="err">' + built.msg + '</span>';
       return;
     }}
 
@@ -1408,7 +1461,7 @@ def signup_page():
       const r = await fetch("/send_email_otp", {{
         method: "POST",
         headers: {{"Content-Type":"application/json"}},
-        body: JSON.stringify({{email}})
+        body: JSON.stringify({{email: built.email}})
       }});
       const data = await r.json();
       if (!r.ok || !data.ok) {{
@@ -1427,12 +1480,17 @@ def signup_page():
   }}
 
   function beforeSubmit() {{
-    const email = buildEmail();
+    const built = buildEmailStrict();
+    if (!built.ok) {{
+      alert(built.msg);
+      return false;
+    }}
+
     const otp = (document.getElementById("otp").value || "").trim();
-    document.getElementById("usernameHidden").value = email;
+    document.getElementById("usernameHidden").value = built.email;
     document.getElementById("otpHidden").value = otp;
 
-    // 비번 확인(프론트만)
+    // 비번 확인(프론트)
     const pw = document.getElementById("pw").value || "";
     const pw2 = document.getElementById("pw2").value || "";
     const pwMsg = document.getElementById("pwMsg");
@@ -1442,7 +1500,7 @@ def signup_page():
       return false;
     }}
 
-    // 약관 필수 체크(프론트만)
+    // 약관 필수(프론트)
     const t_age = document.getElementById("t_age").checked;
     const t_terms = document.getElementById("t_terms").checked;
     const t_priv = document.getElementById("t_priv").checked;
@@ -1451,12 +1509,8 @@ def signup_page():
       return false;
     }}
 
-    // 로봇 체크(프론트만)
-    const robot = document.getElementById("robot").checked;
-    if (!robot) {{
-      alert("로봇이 아님을 확인해 주세요.");
-      return false;
-    }}
+    // ✅ reCAPTCHA: 프론트에서 먼저 체크(실제 검증은 서버가 함)
+    {"if (!grecaptcha || !grecaptcha.getResponse || grecaptcha.getResponse().length === 0) { alert('reCAPTCHA를 완료해 주세요.'); return false; }" if use_real_captcha else "if (!document.getElementById('robotFallback').checked) { alert('로봇이 아님을 확인해 주세요.'); return false; }"}
 
     return true;
   }}
@@ -1465,6 +1519,66 @@ def signup_page():
 </html>
     """
     return HTMLResponse(html_content)
+
+@app.post("/signup")
+def signup(
+    request: Request,
+    username: str = Form(...),
+    otp: str = Form(...),
+    password: str = Form(...),
+    name: str = Form(...),
+    gender: str = Form(...),
+    birth: str = Form(...),
+    g_recaptcha_response: str = Form("", alias="g-recaptcha-response"),
+):
+    email = normalize_email(username)
+
+    # ✅ reCAPTCHA 서버 검증 (키 없으면 verify_recaptcha_v2()가 True 반환하도록 해둠)
+    remoteip = None
+    try:
+        remoteip = request.client.host
+    except Exception:
+        remoteip = None
+
+    if not verify_recaptcha_v2(g_recaptcha_response, remoteip=remoteip):
+        return HTMLResponse("<script>alert('reCAPTCHA 인증에 실패했습니다. 다시 시도해 주세요.');history.back();</script>")
+
+    if not verify_email_otp(email, otp):
+        return HTMLResponse("<script>alert('이메일 인증번호가 올바르지 않거나 만료되었습니다.');history.back();</script>")
+
+    uid = uuid.uuid4().hex
+    try:
+        with db_conn() as con:
+            con.execute(
+                """
+                INSERT INTO users (id, username, pw_hash, name, gender, birth, email_verified_at, created_at)
+                VALUES (?,?,?,?,?,?,?,?)
+                """,
+                (
+                    uid,
+                    email,
+                    make_pw_hash(password),
+                    (name or "").strip(),
+                    (gender or "").strip(),
+                    (birth or "").strip(),
+                    now_kst().isoformat(timespec="seconds"),
+                    now_kst().isoformat(timespec="seconds"),
+                ),
+            )
+            con.commit()
+    except Exception:
+        return HTMLResponse("<script>alert('이미 존재하는 이메일이거나 가입 정보가 올바르지 않습니다.');history.back();</script>")
+
+    token = new_session(uid)
+    resp = RedirectResponse("/app", status_code=303)
+    resp.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        max_age=SESSION_HOURS * 3600,
+        samesite="lax",
+    )
+    return resp
 
 
 @app.get("/logout")
@@ -1567,3 +1681,4 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
