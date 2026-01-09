@@ -5,7 +5,7 @@ import base64
 import io
 import sqlite3
 import json
-import html
+import html as html_mod
 import hashlib
 import random
 import re
@@ -41,31 +41,53 @@ EMAIL_OTP_TTL_MINUTES = 10
 ALLOW_EMAIL_OTP_DEBUG = os.getenv("ALLOW_EMAIL_OTP_DEBUG", "1").strip()
 
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "465").strip() or "465")
+SMTP_PORT = int((os.getenv("SMTP_PORT", "465").strip() or "465"))
 SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
-SMTP_FROM = os.getenv("SMTP_FROM", "").strip()  # "오세요 <me@gmail.com>" 가능
-
-
-DT_FMT = "%Y-%m-%d %H:%M"
+SMTP_FROM = os.getenv("SMTP_FROM", "").strip()  # "오세요 <me@gmail.com>" 형태 가능
 
 
 # =========================================================
-# 1) 환경/DB (⭐ 기존 DB 유지: 파일명/경로 절대 변경 금지)
+# 1) 환경/DB (기존 DB 파일 유지 + 마이그레이션)
 # =========================================================
 def pick_db_path():
-    candidates = ["/var/data", "/tmp"]
-    for d in candidates:
+    """
+    ✅ 기존 계정/이벤트가 안 보이던 이유가 'DB 파일명이 바뀌어서 새 DB를 봤기 때문'인 경우가 많다.
+    그래서 /var/data 또는 /tmp에 이미 존재하는 DB 파일을 우선 사용한다.
+    """
+    candidates_dirs = ["/var/data", "/tmp"]
+    known_names = [
+        "oseyo_final.db",
+        "oseyo_final_email_v1.db",
+        "oseyo.db",
+    ]
+
+    # 1) 기존 DB가 있으면 그걸 사용
+    for d in candidates_dirs:
+        try:
+            if not os.path.isdir(d):
+                continue
+            for nm in known_names:
+                p = os.path.join(d, nm)
+                if os.path.exists(p) and os.path.getsize(p) > 0:
+                    return p
+        except Exception:
+            pass
+
+    # 2) 없으면, 쓸 수 있는 경로에 새로 생성
+    for d in candidates_dirs:
         try:
             os.makedirs(d, exist_ok=True)
             test = os.path.join(d, ".writetest")
             with open(test, "w", encoding="utf-8") as f:
                 f.write("ok")
             os.remove(test)
-            return os.path.join(d, "oseyo_final_email_v1.db")  # ✅ 기존과 동일
+            return os.path.join(d, "oseyo.db")
         except Exception:
             continue
-    return "/tmp/oseyo_final_email_v1.db"
+
+    return "/tmp/oseyo.db"
+
 
 DB_PATH = pick_db_path()
 print(f"[DB] Using: {DB_PATH}")
@@ -73,9 +95,16 @@ print(f"[DB] Using: {DB_PATH}")
 def db_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
+def col_exists(con, table, col):
+    try:
+        rows = con.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(r[1] == col for r in rows)
+    except Exception:
+        return False
+
 def init_db():
     with db_conn() as con:
-        # 이벤트
+        # 이벤트 (가능한 한 기존 테이블 구조 유지)
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS events (
@@ -92,17 +121,21 @@ def init_db():
             );
             """
         )
-        # 마이그레이션 (있으면 무시)
-        for col_sql in [
-            "ALTER TABLE events ADD COLUMN user_id TEXT",
-            "ALTER TABLE events ADD COLUMN capacity INTEGER DEFAULT 10",
-        ]:
+        # 구형 DB 마이그레이션
+        if not col_exists(con, "events", "user_id"):
             try:
-                con.execute(col_sql)
+                con.execute("ALTER TABLE events ADD COLUMN user_id TEXT")
             except Exception:
                 pass
 
-        # 즐겨찾기(기존 유지: 글로벌 카운트)
+        # 정원(capacity) 추가 (구형 DB에도 안전)
+        if not col_exists(con, "events", "capacity"):
+            try:
+                con.execute("ALTER TABLE events ADD COLUMN capacity INTEGER DEFAULT 0")
+            except Exception:
+                pass
+
+        # 즐겨찾기
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS favs (
@@ -112,25 +145,13 @@ def init_db():
             );
             """
         )
-        try:
-            con.execute("ALTER TABLE favs ADD COLUMN updated_at TEXT")
-        except Exception:
-            pass
+        if not col_exists(con, "favs", "updated_at"):
+            try:
+                con.execute("ALTER TABLE favs ADD COLUMN updated_at TEXT")
+            except Exception:
+                pass
 
-        # ✅ 개인 즐겨찾기(새로 추가: 삭제/개인화용)
-        con.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_favs (
-                user_id TEXT,
-                name TEXT,
-                count INTEGER DEFAULT 1,
-                updated_at TEXT,
-                PRIMARY KEY(user_id, name)
-            );
-            """
-        )
-
-        # 유저
+        # 유저 (이메일 인증)
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -145,11 +166,13 @@ def init_db():
             );
             """
         )
+        # 마이그레이션(예전 DB 대비)
         for col_sql in [
             "ALTER TABLE users ADD COLUMN name TEXT",
             "ALTER TABLE users ADD COLUMN gender TEXT",
             "ALTER TABLE users ADD COLUMN birth TEXT",
             "ALTER TABLE users ADD COLUMN email_verified_at TEXT",
+            "ALTER TABLE users ADD COLUMN created_at TEXT",
         ]:
             try:
                 con.execute(col_sql)
@@ -179,12 +202,12 @@ def init_db():
             """
         )
 
-        # ✅ 참여(유저는 1개 이벤트만 참여 가능)
+        # 참여(1인 1활동 제한을 위해 user_id를 PK로 둔다)
         con.execute(
             """
-            CREATE TABLE IF NOT EXISTS event_members (
+            CREATE TABLE IF NOT EXISTS participants (
+                user_id TEXT PRIMARY KEY,
                 event_id TEXT,
-                user_id TEXT UNIQUE,
                 joined_at TEXT
             );
             """
@@ -196,7 +219,87 @@ init_db()
 
 
 # =========================================================
-# 2) 비밀번호/세션 유틸 (⭐ 기존 계정 로그인 유지)
+# 2) 날짜/시간 유틸
+# =========================================================
+def parse_dt_any(s: str):
+    if not s:
+        return None
+    s = str(s).strip()
+    if not s:
+        return None
+
+    fmts = [
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S.%f",
+    ]
+    for fmt in fmts:
+        try:
+            dt = datetime.strptime(s, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=KST)
+            return dt.astimezone(KST)
+        except Exception:
+            continue
+
+    # 마지막 fallback: "2026-01-09 16:00:00+09:00" 같은 형태
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=KST)
+        return dt.astimezone(KST)
+    except Exception:
+        return None
+
+def is_active_event(end_str: str):
+    """
+    end가 없거나 파싱 불가면 '활성'로 간주(사용자 요구: 진행중 이벤트가 탐색탭에서 안 사라지게).
+    """
+    if not end_str:
+        return True
+    end_dt = parse_dt_any(end_str)
+    if not end_dt:
+        return True
+    return end_dt >= now_kst()
+
+def human_left(end_str: str):
+    end_dt = parse_dt_any(end_str)
+    if not end_dt:
+        return ""
+    td = end_dt - now_kst()
+    sec = int(td.total_seconds())
+    if sec <= 0:
+        return "종료"
+    days = sec // 86400
+    sec %= 86400
+    hours = sec // 3600
+    sec %= 3600
+    mins = sec // 60
+
+    parts = []
+    if days > 0:
+        parts.append(f"{days}일")
+    if hours > 0:
+        parts.append(f"{hours}시간")
+    if mins > 0:
+        parts.append(f"{mins}분")
+    if not parts:
+        parts.append("1분 미만")
+    return "남음 " + " ".join(parts)
+
+def fmt_start(s: str):
+    dt = parse_dt_any(s)
+    if not dt:
+        return (s or "")
+    return dt.strftime("%m월 %d일 %H:%M")
+
+
+# =========================================================
+# 3) 비밀번호/세션 유틸
 # =========================================================
 def make_pw_hash(pw: str) -> str:
     salt = uuid.uuid4().hex
@@ -253,13 +356,13 @@ def get_current_user_gr(request: gr.Request):
     token = request.cookies.get(COOKIE_NAME)
     return get_user_by_token(token)
 
-def get_current_user_fastapi(request: Request):
-    token = request.cookies.get(COOKIE_NAME) if request else None
+def get_current_user_api(request: Request):
+    token = request.cookies.get(COOKIE_NAME)
     return get_user_by_token(token)
 
 
 # =========================================================
-# 3) 이메일 OTP 유틸
+# 4) 이메일 OTP 유틸
 # =========================================================
 def normalize_email(e: str) -> str:
     return (e or "").strip().lower()
@@ -328,72 +431,109 @@ def send_email(to_email: str, subject: str, body: str):
 
 
 # =========================================================
-# 4) 시간/상태 헬퍼
+# 5) 즐겨찾기 로직 (삭제 추가)
 # =========================================================
-def parse_dt(s: str):
-    s = (s or "").strip()
-    if not s:
-        return None
-    try:
-        return datetime.strptime(s, DT_FMT).replace(tzinfo=KST)
-    except Exception:
-        return None
-
-def is_ended(end_str: str) -> bool:
-    end_dt = parse_dt(end_str)
-    return bool(end_dt and end_dt <= now_kst())
-
-def remain_str(end_str: str) -> str:
-    end_dt = parse_dt(end_str)
-    if not end_dt:
-        return ""
-    diff = end_dt - now_kst()
-    sec = int(diff.total_seconds())
-    if sec <= 0:
-        return "종료됨"
-    m = sec // 60
-    h = m // 60
-    d = h // 24
-    m = m % 60
-    h = h % 24
-    if d > 0:
-        return f"종료까지 {d}일 {h}시간"
-    if h > 0:
-        return f"종료까지 {h}시간 {m}분"
-    return f"종료까지 {m}분"
-
-def get_joined_event_id(user_id: str):
-    if not user_id:
-        return None
-    with db_conn() as con:
-        row = con.execute(
-            "SELECT event_id FROM event_members WHERE user_id=?",
-            (user_id,),
-        ).fetchone()
-    return row[0] if row else None
-
-def get_event_counts():
+def get_top_favs(limit=10):
     with db_conn() as con:
         rows = con.execute(
-            "SELECT event_id, COUNT(*) FROM event_members GROUP BY event_id"
+            """
+            SELECT name, count FROM favs
+            WHERE name IS NOT NULL AND TRIM(name) != ''
+            ORDER BY count DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
-    return {r[0]: int(r[1]) for r in rows}
+    return [{"name": r[0], "count": r[1]} for r in rows]
 
-def safe(s: str) -> str:
-    return html.escape(s or "")
+def get_all_fav_names(limit=200):
+    with db_conn() as con:
+        rows = con.execute(
+            """
+            SELECT name FROM favs
+            WHERE name IS NOT NULL AND TRIM(name) != ''
+            ORDER BY count DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+def fav_buttons_update(favs):
+    updates = []
+    for i in range(10):
+        if i < len(favs):
+            updates.append(gr.update(value=f"⭐ {favs[i]['name']}", visible=True))
+        else:
+            updates.append(gr.update(value="", visible=False))
+    return updates
+
+def fav_del_dropdown_update():
+    names = get_all_fav_names(200)
+    return gr.update(choices=names, value=None)
+
+def add_fav_only(name: str, request: gr.Request):
+    user = get_current_user_gr(request)
+    if not user:
+        favs = get_top_favs(10)
+        return "로그인이 필요합니다.", *fav_buttons_update(favs), fav_del_dropdown_update()
+
+    name = (name or "").strip()
+    if not name:
+        favs = get_top_favs(10)
+        return "활동명을 입력해 주세요.", *fav_buttons_update(favs), fav_del_dropdown_update()
+
+    with db_conn() as con:
+        con.execute(
+            """
+            INSERT INTO favs (name, count, updated_at) VALUES (?, 1, ?)
+            ON CONFLICT(name) DO UPDATE SET count = count + 1, updated_at=excluded.updated_at
+            """,
+            (name, now_kst().isoformat(timespec="seconds")),
+        )
+        con.commit()
+
+    favs = get_top_favs(10)
+    return "✅ 즐겨찾기에 추가되었습니다.", *fav_buttons_update(favs), fav_del_dropdown_update()
+
+def delete_fav(name: str, request: gr.Request):
+    user = get_current_user_gr(request)
+    if not user:
+        favs = get_top_favs(10)
+        return "로그인이 필요합니다.", *fav_buttons_update(favs), fav_del_dropdown_update()
+
+    name = (name or "").strip()
+    if not name:
+        favs = get_top_favs(10)
+        return "삭제할 즐겨찾기를 선택해 주세요.", *fav_buttons_update(favs), fav_del_dropdown_update()
+
+    with db_conn() as con:
+        con.execute("DELETE FROM favs WHERE name = ?", (name,))
+        con.commit()
+
+    favs = get_top_favs(10)
+    return "✅ 즐겨찾기를 삭제했습니다.", *fav_buttons_update(favs), fav_del_dropdown_update()
 
 
 # =========================================================
-# 5) 이벤트/즐겨찾기 로직 (저장/삭제/즐겨찾기)
+# 6) 이벤트 생성/삭제 (Gradio용)
 # =========================================================
 def save_data(title, img, start, end, addr_obj, capacity, request: gr.Request):
     user = get_current_user_gr(request)
     if not user:
-        return "로그인이 필요합니다."
+        return False, "로그인이 필요합니다."
 
     title = (title or "").strip()
     if not title:
-        return "제목을 입력해 주세요"
+        return False, "제목을 입력해 주세요."
+
+    # capacity
+    try:
+        cap = int(capacity) if capacity is not None else 0
+        if cap < 0:
+            cap = 0
+    except Exception:
+        cap = 0
 
     if addr_obj is None:
         addr_obj = {}
@@ -419,56 +559,39 @@ def save_data(title, img, start, end, addr_obj, capacity, request: gr.Request):
         lat, lng = 0.0, 0.0
 
     try:
-        cap = int(capacity) if capacity is not None and str(capacity).strip() != "" else 10
-        if cap <= 0:
-            cap = 10
-        if cap > 999:
-            cap = 999
-    except Exception:
-        cap = 10
+        with db_conn() as con:
+            con.execute(
+                """
+                INSERT INTO events (id, title, photo, start, end, addr, lat, lng, created_at, user_id, capacity)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    uuid.uuid4().hex[:10],
+                    title,
+                    pic_b64,
+                    (start or "").strip(),
+                    (end or "").strip(),
+                    addr_name,
+                    lat,
+                    lng,
+                    now_kst().isoformat(timespec="seconds"),
+                    user["id"],
+                    cap,
+                ),
+            )
 
-    with db_conn() as con:
-        con.execute(
-            """
-            INSERT INTO events (id, title, photo, start, end, addr, lat, lng, created_at, user_id, capacity)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                uuid.uuid4().hex[:8],
-                title,
-                pic_b64,
-                start or "",
-                end or "",
-                addr_name,
-                lat,
-                lng,
-                now_kst().isoformat(timespec="seconds"),
-                user["id"],
-                cap,
-            ),
-        )
-
-        # 글로벌(기존) 즐겨찾기 카운트 유지
-        con.execute(
-            """
-            INSERT INTO favs (name, count, updated_at) VALUES (?, 1, ?)
-            ON CONFLICT(name) DO UPDATE SET count = count + 1, updated_at=excluded.updated_at
-            """,
-            (title, now_kst().isoformat(timespec="seconds")),
-        )
-
-        # 개인 즐겨찾기 업데이트
-        con.execute(
-            """
-            INSERT INTO user_favs (user_id, name, count, updated_at) VALUES (?, ?, 1, ?)
-            ON CONFLICT(user_id, name) DO UPDATE SET count = count + 1, updated_at=excluded.updated_at
-            """,
-            (user["id"], title, now_kst().isoformat(timespec="seconds")),
-        )
-
-        con.commit()
-
-    return "✅ 이벤트가 생성되었습니다"
+            # 즐겨찾기 count up
+            con.execute(
+                """
+                INSERT INTO favs (name, count, updated_at) VALUES (?, 1, ?)
+                ON CONFLICT(name) DO UPDATE SET count = count + 1, updated_at=excluded.updated_at
+                """,
+                (title, now_kst().isoformat(timespec="seconds")),
+            )
+            con.commit()
+        return True, "✅ 이벤트가 생성되었습니다."
+    except Exception as e:
+        return False, f"❌ 이벤트 생성 실패: {html_mod.escape(str(e))}"
 
 def get_my_events(request: gr.Request):
     user = get_current_user_gr(request)
@@ -484,136 +607,157 @@ def get_my_events(request: gr.Request):
 def delete_my_event(event_id, request: gr.Request):
     user = get_current_user_gr(request)
     if not user or not event_id:
-        return "삭제할 이벤트를 선택해주세요.", gr.update(), ""
+        return "삭제할 이벤트를 선택해주세요.", gr.update()
 
     with db_conn() as con:
         con.execute("DELETE FROM events WHERE id = ? AND user_id = ?", (event_id, user["id"]))
-        # 그 이벤트에 참여중인 사람도 정리
-        con.execute("DELETE FROM event_members WHERE event_id = ?", (event_id,))
+        # 참여 중인 사람도 정리
+        con.execute("DELETE FROM participants WHERE event_id = ?", (event_id,))
         con.commit()
 
     new_list = get_my_events(request)
-    return "✅ 삭제되었습니다.", gr.update(choices=new_list, value=None), uuid.uuid4().hex
-
-def get_my_favs(request: gr.Request, limit=30):
-    user = get_current_user_gr(request)
-    if not user:
-        return []
-    with db_conn() as con:
-        rows = con.execute(
-            """
-            SELECT name, count FROM user_favs
-            WHERE user_id=?
-            ORDER BY count DESC, updated_at DESC
-            LIMIT ?
-            """,
-            (user["id"], limit),
-        ).fetchall()
-    return [{"name": r[0], "count": r[1]} for r in rows]
-
-def get_global_favs(limit=10):
-    with db_conn() as con:
-        rows = con.execute(
-            """
-            SELECT name, count FROM favs
-            WHERE name IS NOT NULL AND TRIM(name) != ''
-            ORDER BY count DESC, updated_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    return [{"name": r[0], "count": r[1]} for r in rows]
-
-def merged_favs_for_buttons(request: gr.Request, limit=10):
-    user = get_current_user_gr(request)
-    personal = get_my_favs(request, limit=limit)
-    # 개인 즐겨찾기 우선, 부족하면 글로벌로 채움(중복 제거)
-    seen = set()
-    out = []
-    for f in personal:
-        n = (f["name"] or "").strip()
-        if n and n not in seen:
-            out.append({"name": n, "count": f["count"]})
-            seen.add(n)
-        if len(out) >= limit:
-            return out
-
-    for f in get_global_favs(limit=limit * 2):
-        n = (f["name"] or "").strip()
-        if n and n not in seen:
-            out.append({"name": n, "count": f["count"]})
-            seen.add(n)
-        if len(out) >= limit:
-            break
-    return out
-
-def fav_buttons_update(favs):
-    updates = []
-    for i in range(10):
-        if i < len(favs):
-            updates.append(gr.update(value=f"⭐ {favs[i]['name']}", visible=True))
-        else:
-            updates.append(gr.update(value="", visible=False))
-    return updates
-
-def add_fav_only(name: str, request: gr.Request):
-    user = get_current_user_gr(request)
-    if not user:
-        favs = merged_favs_for_buttons(request, 10)
-        return "로그인이 필요합니다.", gr.update(choices=[]), *fav_buttons_update(favs)
-
-    name = (name or "").strip()
-    if not name:
-        favs = merged_favs_for_buttons(request, 10)
-        my_choices = [x["name"] for x in get_my_favs(request, 30)]
-        return "활동명을 입력해 주세요.", gr.update(choices=my_choices), *fav_buttons_update(favs)
-
-    with db_conn() as con:
-        # 글로벌(기존) 유지
-        con.execute(
-            """
-            INSERT INTO favs (name, count, updated_at) VALUES (?, 1, ?)
-            ON CONFLICT(name) DO UPDATE SET count = count + 1, updated_at=excluded.updated_at
-            """,
-            (name, now_kst().isoformat(timespec="seconds")),
-        )
-        # 개인 저장
-        con.execute(
-            """
-            INSERT INTO user_favs (user_id, name, count, updated_at) VALUES (?, ?, 1, ?)
-            ON CONFLICT(user_id, name) DO UPDATE SET count = count + 1, updated_at=excluded.updated_at
-            """,
-            (user["id"], name, now_kst().isoformat(timespec="seconds")),
-        )
-        con.commit()
-
-    favs = merged_favs_for_buttons(request, 10)
-    my_choices = [x["name"] for x in get_my_favs(request, 30)]
-    return "✅ 즐겨찾기에 추가되었습니다.", gr.update(choices=my_choices, value=None), *fav_buttons_update(favs)
-
-def delete_my_fav(name: str, request: gr.Request):
-    user = get_current_user_gr(request)
-    if not user:
-        favs = merged_favs_for_buttons(request, 10)
-        return "로그인이 필요합니다.", gr.update(choices=[]), *fav_buttons_update(favs)
-
-    name = (name or "").strip()
-    if not name:
-        favs = merged_favs_for_buttons(request, 10)
-        my_choices = [x["name"] for x in get_my_favs(request, 30)]
-        return "삭제할 즐겨찾기를 선택해 주세요.", gr.update(choices=my_choices), *fav_buttons_update(favs)
-
-    with db_conn() as con:
-        con.execute("DELETE FROM user_favs WHERE user_id=? AND name=?", (user["id"], name))
-        con.commit()
-
-    favs = merged_favs_for_buttons(request, 10)
-    my_choices = [x["name"] for x in get_my_favs(request, 30)]
-    return "✅ 삭제했습니다.", gr.update(choices=my_choices, value=None), *fav_buttons_update(favs)
+    return "✅ 삭제되었습니다.", gr.update(choices=new_list, value=None)
 
 
 # =========================================================
-# 6) CSS + Gradio UI
+# 7) 참여 로직(API용) + 정리
+# =========================================================
+def cleanup_participants():
+    """
+    종료된 이벤트에 묶인 참여는 자동 해제한다.
+    """
+    with db_conn() as con:
+        rows = con.execute("SELECT user_id, event_id FROM participants").fetchall()
+        for uid, eid in rows:
+            ev = con.execute("SELECT end FROM events WHERE id = ?", (eid,)).fetchone()
+            if not ev:
+                con.execute("DELETE FROM participants WHERE user_id = ?", (uid,))
+                continue
+            end_str = (ev[0] or "")
+            if not is_active_event(end_str):
+                con.execute("DELETE FROM participants WHERE user_id = ?", (uid,))
+        con.commit()
+
+def get_participant_counts():
+    with db_conn() as con:
+        rows = con.execute(
+            "SELECT event_id, COUNT(*) FROM participants GROUP BY event_id"
+        ).fetchall()
+    return {r[0]: int(r[1]) for r in rows}
+
+def get_user_joined_event_id(user_id: str):
+    cleanup_participants()
+    with db_conn() as con:
+        row = con.execute("SELECT event_id FROM participants WHERE user_id = ?", (user_id,)).fetchone()
+    return row[0] if row else None
+
+def get_events_for_api(user_id: str):
+    """
+    종료된 이벤트는 제외하여 탐색/지도 모두 일관되게 처리한다.
+    """
+    cleanup_participants()
+    joined_id = get_user_joined_event_id(user_id)
+    counts = get_participant_counts()
+
+    with db_conn() as con:
+        rows = con.execute(
+            """
+            SELECT id, title, photo, start, end, addr, lat, lng, created_at, user_id, COALESCE(capacity,0)
+            FROM events
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+
+    events = []
+    joined_event = None
+    for r in rows:
+        eid, title, photo, start, end, addr, lat, lng, created_at, owner_id, cap = r
+        if not is_active_event(end):
+            continue
+
+        c = counts.get(eid, 0)
+        cap = int(cap or 0)
+        cap_text = "∞" if cap <= 0 else str(cap)
+
+        ev = {
+            "id": eid,
+            "title": title or "",
+            "photo": photo or "",
+            "start": start or "",
+            "end": end or "",
+            "addr": addr or "",
+            "lat": lat or 0,
+            "lng": lng or 0,
+            "created_at": created_at or "",
+            "owner_id": owner_id or "",
+            "capacity": cap,
+            "capacity_text": cap_text,
+            "count": c,
+            "joined_by_me": (eid == joined_id),
+            "time_left": human_left(end),
+            "start_text": fmt_start(start),
+        }
+        events.append(ev)
+        if ev["joined_by_me"]:
+            joined_event = ev
+
+    return joined_event, events
+
+def join_event_api(user_id: str, event_id: str):
+    cleanup_participants()
+    with db_conn() as con:
+        ev = con.execute(
+            "SELECT id, end, COALESCE(capacity,0) FROM events WHERE id = ?",
+            (event_id,),
+        ).fetchone()
+        if not ev:
+            return False, "이벤트를 찾을 수 없습니다.", None
+
+        _, end_str, cap = ev
+        if not is_active_event(end_str):
+            return False, "이미 종료된 이벤트입니다.", None
+
+        # 이미 다른 이벤트 참여 중인지
+        row = con.execute("SELECT event_id FROM participants WHERE user_id = ?", (user_id,)).fetchone()
+        if row and row[0] and row[0] != event_id:
+            return False, "이미 다른 활동에 참여중입니다. (빠지기 후 참여 가능합니다)", row[0]
+
+        # 정원 체크
+        cap = int(cap or 0)
+        if cap > 0:
+            cnt = con.execute("SELECT COUNT(*) FROM participants WHERE event_id = ?", (event_id,)).fetchone()[0]
+            if int(cnt) >= cap:
+                return False, "정원이 가득 찼습니다.", None
+
+        # 참여 등록(동일 이벤트는 upsert)
+        con.execute(
+            """
+            INSERT INTO participants (user_id, event_id, joined_at)
+            VALUES (?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                event_id=excluded.event_id,
+                joined_at=excluded.joined_at
+            """,
+            (user_id, event_id, now_kst().isoformat(timespec="seconds")),
+        )
+        con.commit()
+    return True, "✅ 참여했습니다.", None
+
+def leave_event_api(user_id: str, event_id: str):
+    cleanup_participants()
+    with db_conn() as con:
+        row = con.execute("SELECT event_id FROM participants WHERE user_id = ?", (user_id,)).fetchone()
+        if not row:
+            return False, "현재 참여중인 활동이 없습니다."
+        if row[0] != event_id:
+            return False, "이 활동에 참여중이 아닙니다."
+        con.execute("DELETE FROM participants WHERE user_id = ?", (user_id,))
+        con.commit()
+    return True, "✅ 빠졌습니다."
+
+
+# =========================================================
+# 8) Gradio UI (탐색/지도는 iframe으로 분리)
 # =========================================================
 CSS = """
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -623,7 +767,12 @@ html, body {
   font-family: Pretendard, -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif !important;
   background-color: #ffffff !important;
 }
-.gradio-container { max-width: 100% !important; padding: 0 !important; margin: 0 !important;}
+.gradio-container { max-width: 100% !important; padding: 0 !important; margin: 0 !important; }
+
+/* ✅ 웹에서는 너무 넓게 퍼지지 않도록(모바일 느낌 유지) */
+@media (min-width: 900px) {
+  .gradio-container { max-width: 560px !important; margin: 0 auto !important; }
+}
 
 .header-row {
     padding: 20px 24px 10px 24px;
@@ -726,54 +875,6 @@ button.selected {
 .btn-primary { background: #111 !important; color: white !important; }
 .btn-secondary { background: #f0f0f0 !important; color: #333 !important; }
 
-.event-card { margin-bottom: 24px; }
-.event-photo {
-  width: 100%;
-  aspect-ratio: 16/9;
-  object-fit: cover;
-  border-radius: 16px;
-  margin-bottom: 12px;
-  background-color: #f0f0f0;
-  border: 1px solid #eee;
-}
-.event-info { padding: 0 4px; }
-.event-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: #111;
-  margin-bottom: 6px;
-  line-height: 1.4;
-}
-.event-meta {
-  font-size: 14px;
-  color: #666;
-  margin-bottom: 2px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.join-row {
-  display:flex;
-  justify-content: space-between;
-  align-items:center;
-  margin-top: 10px;
-  gap: 10px;
-}
-.join-count {
-  font-size: 13px;
-  color:#555;
-}
-.join-btn {
-  padding: 10px 14px;
-  border-radius: 12px;
-  font-weight: 800;
-  border: none;
-  cursor: pointer;
-}
-.join-btn.primary { background:#111; color:#fff; }
-.join-btn.gray { background:#f0f0f0; color:#333; cursor:not-allowed; }
-.join-btn.danger { background:#ffe8e8; color:#b00020; }
-
 .fav-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .fav-grid button {
   font-size: 13px !important;
@@ -785,47 +886,13 @@ button.selected {
 }
 .small-muted { color:#777; font-size:12px; margin-top:-6px; }
 
-.joined-sticky {
-  position: sticky;
-  top: 0;
-  z-index: 50;
+.iframe-wrap { padding: 0 16px 90px 16px; }
+.iframe-wrap iframe {
+  width: 100%;
+  height: 74vh;
+  border: none;
+  border-radius: 16px;
   background: #fff;
-  padding: 14px 24px 10px 24px;
-  border-bottom: 1px solid #eee;
-}
-.joined-title {
-  font-size: 14px;
-  font-weight: 900;
-  color: #111;
-  margin-bottom: 10px;
-}
-.joined-empty {
-  font-size: 13px;
-  color: #777;
-  padding: 10px 12px;
-  background: #fafafa;
-  border: 1px solid #eee;
-  border-radius: 12px;
-}
-.badge-ended {
-  display:inline-block;
-  font-size:12px;
-  font-weight:900;
-  padding:6px 10px;
-  border-radius:999px;
-  background:#f2f2f2;
-  color:#666;
-  margin-top:8px;
-}
-.event-ended {
-  filter: grayscale(1);
-  opacity: 0.65;
-}
-.event-ended .join-row { display:none !important; }
-
-/* ✅ 웹에서 사진이 너무 길게 보이는 문제만 완화(모바일 유지) */
-@media (min-width: 900px) {
-  .event-photo { max-height: 320px; }
 }
 """
 
@@ -836,105 +903,24 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     search_state = gr.State([])
     selected_addr = gr.State({})
 
-    # ✅ JS 메시지/동기화 스크립트 (탐색/지도 즉시 반영)
+    # ✅ 부모(Gradio)에서 메시지 받아 두 iframe 모두 갱신
     gr.HTML("""
 <script>
-(function(){
-  function $(id){ return document.getElementById(id); }
-
-  async function fetchText(url){
-    const r = await fetch(url, {cache:"no-store", credentials:"same-origin"});
-    return await r.text();
+  function __refresh_iframe(id){
+    const f = document.getElementById(id);
+    if(!f || !f.contentWindow) return;
+    f.contentWindow.postMessage({type:"REFRESH"}, "*");
   }
-
-  window.OSEYO = window.OSEYO || {};
-
-  window.OSEYO.refreshExplore = async function(){
-    const root = $("explore_root");
-    if(!root) return;
-    try{
-      root.innerHTML = "<div style='padding:60px 24px; color:#999; text-align:center;'>불러오는 중...</div>";
-      const html = await fetchText("/api/events_html");
-      root.innerHTML = html;
-    }catch(e){
-      root.innerHTML = "<div style='padding:60px 24px; color:#c00; text-align:center;'>목록 로드 실패</div>";
-    }
+  function __refresh_all(){
+    __refresh_iframe("explore_iframe");
+    __refresh_iframe("map_iframe");
   }
-
-  window.OSEYO.notifyMapRefresh = function(){
-    const iframe = $("map_iframe");
-    if(iframe && iframe.contentWindow){
-      iframe.contentWindow.postMessage({type:"oseyo_refresh_map"}, "*");
-    }
-  }
-
-  window.OSEYO.join = async function(eventId){
-    const r = await fetch("/api/join_event", {
-      method:"POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({event_id:eventId}),
-      credentials:"same-origin"
-    });
-    const data = await r.json().catch(()=>({ok:false, message:"응답 파싱 실패"}));
-    if(!r.ok || !data.ok){
-      alert(data.message || "참여 실패");
-      return;
-    }
-    await window.OSEYO.refreshExplore();
-    window.OSEYO.notifyMapRefresh();
-  }
-
-  window.OSEYO.leave = async function(eventId){
-    const r = await fetch("/api/leave_event", {
-      method:"POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({event_id:eventId}),
-      credentials:"same-origin"
-    });
-    const data = await r.json().catch(()=>({ok:false, message:"응답 파싱 실패"}));
-    if(!r.ok || !data.ok){
-      alert(data.message || "빠지기 실패");
-      return;
-    }
-    await window.OSEYO.refreshExplore();
-    window.OSEYO.notifyMapRefresh();
-  }
-
-  // iframe(map) -> parent(explore) 갱신 요청
-  window.addEventListener("message", (e)=>{
+  window.addEventListener("message", (e) => {
     if(!e || !e.data) return;
-    if(e.data.type === "oseyo_refresh_parent"){
-      window.OSEYO.refreshExplore();
+    if(e.data.type === "REFRESH_ALL"){
+      __refresh_all();
     }
   });
-
-  // Gradio 버튼에 JS 핸들러 달기(새로고침 버튼)
-  function hookRefreshBtn(){
-    const b = $("refresh_btn");
-    if(!b) return;
-    // gradio는 내부에 button이 한 겹 더 있을 수 있음
-    b.addEventListener("click", (ev)=>{
-      try{ window.OSEYO.refreshExplore(); window.OSEYO.notifyMapRefresh(); }catch(e){}
-    }, {capture:true});
-  }
-
-  // 신호값(숨김 인풋)이 바뀌면 목록/지도 갱신
-  let lastSig = "";
-  setInterval(()=>{
-    const sig = $("js_signal");
-    if(sig && sig.value !== lastSig){
-      lastSig = sig.value;
-      window.OSEYO.refreshExplore();
-      window.OSEYO.notifyMapRefresh();
-    }
-  }, 700);
-
-  // 최초 로드
-  window.addEventListener("load", ()=>{
-    hookRefreshBtn();
-    window.OSEYO.refreshExplore();
-  });
-})();
 </script>
 """)
 
@@ -947,21 +933,28 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     with gr.Tabs(elem_classes=["tabs"]):
         with gr.Tab("탐색"):
-            refresh_btn = gr.Button("🔄 목록 새로고침", variant="secondary", size="sm", elem_id="refresh_btn")
-            explore_html = gr.HTML("<div id='explore_root'></div>")
+            gr.HTML("""
+              <div class="iframe-wrap">
+                <iframe id="explore_iframe" src="/explore"></iframe>
+              </div>
+            """)
         with gr.Tab("지도"):
-            gr.HTML('<iframe id="map_iframe" src="/map" style="width:100%;height:70vh;border:none;border-radius:16px;"></iframe>')
+            gr.HTML("""
+              <div class="iframe-wrap">
+                <iframe id="map_iframe" src="/map"></iframe>
+              </div>
+            """)
 
     with gr.Row(elem_classes=["fab-wrapper"]):
         fab = gr.Button("+")
 
     overlay = gr.HTML("<div class='overlay'></div>", visible=False)
-
-    # ✅ JS 신호 (값 바뀌면 목록/지도 갱신)
-    js_signal = gr.Textbox(value="", visible=False, elem_id="js_signal")
+    js_poke = gr.HTML("", visible=False)  # ✅ 저장/삭제 후 iframe 갱신용 스크립트 주입
 
     with gr.Column(visible=False, elem_classes=["main-modal"]) as modal_m:
         gr.HTML("<div class='modal-header'>새 이벤트 만들기</div>")
+
+        create_msg = gr.Markdown("")
 
         with gr.Tabs(elem_classes=["modal-body"]):
             with gr.Tab("작성하기"):
@@ -976,13 +969,10 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
                 with gr.Row():
                     fav_new = gr.Textbox(label="즐겨찾기 추가", placeholder="예: 30분 산책", lines=1)
                     fav_add_btn = gr.Button("추가", variant="secondary")
+                with gr.Row():
+                    fav_del_dd = gr.Dropdown(label="즐겨찾기 삭제", choices=[], interactive=True)
+                    fav_del_btn = gr.Button("삭제", variant="stop")
                 fav_msg = gr.Markdown("")
-
-                with gr.Accordion("즐겨찾기 삭제", open=False):
-                    fav_del_dd = gr.Dropdown(label="삭제할 즐겨찾기", choices=[], value=None, interactive=True)
-                    fav_del_btn = gr.Button("선택 삭제", variant="stop")
-                    fav_manage_msg = gr.Markdown("")
-
                 gr.Markdown("---")
 
                 t_in = gr.Textbox(label="이벤트명", placeholder="예: 30분 산책, 조용히 책 읽기", lines=1)
@@ -991,10 +981,14 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
                     img_in = gr.Image(label="사진", type="numpy", height=200)
 
                 with gr.Row():
-                    s_in = gr.Textbox(label="시작", value=now_dt.strftime(DT_FMT))
-                    e_in = gr.Textbox(label="종료", value=later_dt.strftime(DT_FMT))
+                    s_in = gr.Textbox(label="시작(예: 2026-01-09 16:00)", value=now_dt.strftime("%Y-%m-%d %H:%M"))
+                    e_in = gr.Textbox(label="종료(예: 2026-01-09 18:00)", value=later_dt.strftime("%Y-%m-%d %H:%M"))
 
-                cap_in = gr.Number(label="정원(기본 10)", value=10, precision=0)
+                # 정원 스텝퍼
+                with gr.Row():
+                    cap_minus = gr.Button("−", variant="secondary")
+                    cap_in = gr.Number(label="정원(0=무제한)", value=0, precision=0)
+                    cap_plus = gr.Button("+", variant="secondary")
 
                 addr_v = gr.Textbox(label="장소", interactive=False, placeholder="장소를 검색해주세요")
                 addr_btn = gr.Button("🔍 장소 검색", size="sm")
@@ -1021,23 +1015,23 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     def open_main_modal(request: gr.Request):
         my_events = get_my_events(request)
-        favs = merged_favs_for_buttons(request, 10)
-        my_choices = [x["name"] for x in get_my_favs(request, 30)]
+        favs = get_top_favs(10)
         return (
             gr.update(visible=True),
             gr.update(visible=True),
             gr.update(choices=my_events, value=None),
             "",
+            "",
             *fav_buttons_update(favs),
             "",
-            gr.update(choices=my_choices, value=None),
-            "",
+            fav_del_dropdown_update(),
+            ""
         )
 
     fab.click(
         open_main_modal,
         None,
-        [overlay, modal_m, my_event_list, del_msg] + fav_btns + [fav_msg, fav_del_dd, fav_manage_msg],
+        [overlay, modal_m, my_event_list, del_msg, create_msg] + fav_btns + [fav_msg, fav_del_dd, js_poke],
     )
 
     def close_all():
@@ -1055,14 +1049,33 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     fav_add_btn.click(
         fn=add_fav_only,
         inputs=[fav_new],
-        outputs=[fav_msg, fav_del_dd] + fav_btns,
+        outputs=[fav_msg] + fav_btns + [fav_del_dd],
     )
 
     fav_del_btn.click(
-        fn=delete_my_fav,
+        fn=delete_fav,
         inputs=[fav_del_dd],
-        outputs=[fav_manage_msg, fav_del_dd] + fav_btns,
+        outputs=[fav_msg] + fav_btns + [fav_del_dd],
     )
+
+    def cap_dec(x):
+        try:
+            v = int(x or 0)
+        except Exception:
+            v = 0
+        v = max(0, v - 1)
+        return gr.update(value=v)
+
+    def cap_inc(x):
+        try:
+            v = int(x or 0)
+        except Exception:
+            v = 0
+        v = v + 1
+        return gr.update(value=v)
+
+    cap_minus.click(cap_dec, inputs=cap_in, outputs=cap_in)
+    cap_plus.click(cap_inc, inputs=cap_in, outputs=cap_in)
 
     addr_btn.click(lambda: gr.update(visible=True), None, modal_s)
     s_close.click(lambda: gr.update(visible=False), None, modal_s)
@@ -1081,7 +1094,12 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             timeout=15,
         )
         cands = []
-        for d in res.json().get("documents", []):
+        try:
+            docs = res.json().get("documents", [])
+        except Exception:
+            docs = []
+
+        for d in docs:
             label = f"{d.get('place_name','')} ({d.get('address_name','')})"
             cands.append({"label": label, "name": d.get("place_name",""), "x": d.get("x"), "y": d.get("y")})
         return cands, gr.update(choices=[x["label"] for x in cands], value=None)
@@ -1096,26 +1114,62 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     s_final.click(confirm_k, [q_res, search_state], [addr_v, selected_addr, modal_s])
 
+    def poke_refresh_script():
+        # ✅ iframe 내부에서 REFRESH 메시지를 받아 fetch로 즉시 갱신
+        return gr.update(value=f"""
+<script>
+  (function(){{
+    try {{
+      const f1 = document.getElementById("explore_iframe");
+      const f2 = document.getElementById("map_iframe");
+      if(f1 && f1.contentWindow) f1.contentWindow.postMessage({{type:"REFRESH"}}, "*");
+      if(f2 && f2.contentWindow) f2.contentWindow.postMessage({{type:"REFRESH"}}, "*");
+    }} catch(e) {{}}
+  }})();
+</script>
+""")
+
     def save_and_close(title, img, start, end, addr, cap, req: gr.Request):
-        msg = save_data(title, img, start, end, addr, cap, req)
-        # 성공/실패 메시지는 여기선 안 띄우고, JS signal만 갱신해서 목록/지도 갱신
-        return gr.update(visible=False), gr.update(visible=False), uuid.uuid4().hex
+        ok, msg = save_data(title, img, start, end, addr, cap, req)
+        favs = get_top_favs(10)
+        if ok:
+            return (
+                msg,
+                gr.update(visible=False),
+                gr.update(visible=False),
+                *fav_buttons_update(favs),
+                fav_del_dropdown_update(),
+                poke_refresh_script(),
+            )
+        else:
+            return (
+                msg,
+                gr.update(visible=True),
+                gr.update(visible=True),
+                *fav_buttons_update(favs),
+                fav_del_dropdown_update(),
+                gr.update(value=""),
+            )
 
     m_save.click(
         save_and_close,
         [t_in, img_in, s_in, e_in, selected_addr, cap_in],
-        [overlay, modal_m, js_signal],
+        [create_msg, overlay, modal_m] + fav_btns + [fav_del_dd, js_poke],
     )
 
+    def delete_and_refresh(event_id, req: gr.Request):
+        msg, dd_up = delete_my_event(event_id, req)
+        return msg, dd_up, poke_refresh_script()
+
     del_btn.click(
-        delete_my_event,
+        delete_and_refresh,
         [my_event_list],
-        [del_msg, my_event_list, js_signal],
+        [del_msg, my_event_list, js_poke],
     )
 
 
 # =========================================================
-# 7) FastAPI + 로그인/회원가입 + 이메일 OTP + API
+# 9) FastAPI + 로그인/회원가입 + API + 탐색/지도 페이지
 # =========================================================
 app = FastAPI()
 
@@ -1124,17 +1178,27 @@ PUBLIC_PATHS = {"/", "/login", "/signup", "/logout", "/health", "/send_email_otp
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path or "/"
-    if path.startswith("/static") or path.startswith("/assets") or path in PUBLIC_PATHS:
+
+    # 정적 리소스
+    if path.startswith("/static") or path.startswith("/assets"):
         return await call_next(request)
 
-    # Gradio assets under /app/* are protected by login
-    token = request.cookies.get(COOKIE_NAME)
-    u = get_user_by_token(token)
+    # 공개 경로
+    if path in PUBLIC_PATHS:
+        return await call_next(request)
 
-    if not u:
-        # fetch api는 JSON으로
-        if path.startswith("/api/"):
+    # 나머지는 로그인 필요
+    token = request.cookies.get(COOKIE_NAME)
+    user = get_user_by_token(token)
+
+    # API는 401
+    if path.startswith("/api/"):
+        if not user:
             return JSONResponse({"ok": False, "message": "로그인이 필요합니다."}, status_code=401)
+        return await call_next(request)
+
+    # HTML(탐색/지도/앱)은 로그인 없으면 로그인으로
+    if not user:
         return RedirectResponse("/login", status_code=303)
 
     return await call_next(request)
@@ -1150,6 +1214,10 @@ def root(request: Request):
         return RedirectResponse("/app", status_code=303)
     return RedirectResponse("/login", status_code=303)
 
+
+# -----------------------------
+# 로그인
+# -----------------------------
 @app.get("/login")
 def login_page():
     html_content = """
@@ -1166,9 +1234,9 @@ def login_page():
     .container { width:100%; max-width:360px; padding:20px; text-align:center; }
     h1 { font-size:32px; font-weight:300; margin:0 0 10px 0; color:#333; }
     p.sub { font-size:15px; color:#888; margin-bottom:40px; }
-    input { width:100%; padding:14px; margin-bottom:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; font-size:15px; }
+    input { width:100%; padding:14px; margin-bottom:10px; border:1px solid #ddd; border-radius:10px; box-sizing:border-box; font-size:15px; }
     input:focus { outline:none; border-color:#333; }
-    .login-btn { width:100%; padding:15px; border-radius:6px; border:none; background:#111; color:white;
+    .login-btn { width:100%; padding:15px; border-radius:12px; border:none; background:#111; color:white;
       font-weight:700; font-size:16px; cursor:pointer; margin-top:10px; }
     .footer-link { margin-top:20px; font-size:13px; color:#888; }
     .footer-link a { color:#333; text-decoration:underline; }
@@ -1191,13 +1259,12 @@ def login_page():
   </div>
 </body>
 </html>
-"""
+    """
     return HTMLResponse(html_content)
 
 @app.post("/login")
 def login(username: str = Form(...), password: str = Form(...)):
     username = normalize_email(username)
-
     with db_conn() as con:
         row = con.execute("SELECT id, pw_hash FROM users WHERE username=?", (username,)).fetchone()
 
@@ -1216,6 +1283,9 @@ def login(username: str = Form(...), password: str = Form(...)):
     return resp
 
 
+# -----------------------------
+# 이메일 OTP 발송
+# -----------------------------
 @app.post("/send_email_otp")
 async def send_email_otp(request: Request):
     try:
@@ -1259,7 +1329,9 @@ async def send_email_otp(request: Request):
     return JSONResponse(resp)
 
 
-# ✅ 회원가입 UI: 스샷 스타일 + 이메일(아이디/도메인 분리) + 비번확인/약관 UI (기존 기능 유지)
+# -----------------------------
+# 회원가입 (이메일 아이디/도메인 분리 + 약관 정렬 개선)
+# -----------------------------
 @app.get("/signup")
 def signup_page():
     html_content = """
@@ -1271,65 +1343,96 @@ def signup_page():
   <title>오세요 - 회원가입</title>
   <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-    body { font-family:Pretendard, system-ui; background:#fff; margin:0; padding:0; }
-    .top { padding:22px 24px; }
-    .brand { font-weight:900; font-size:18px; }
-    .wrap { max-width:420px; margin:0 auto; padding:10px 18px 40px 18px; }
-    .title { text-align:center; font-weight:900; font-size:18px; margin:18px 0 10px 0; }
-    .sns { display:flex; justify-content:center; gap:14px; margin:16px 0 18px 0; }
-    .sns .c { width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:900; color:#fff; }
-    .c.fb { background:#3b5998; } .c.kk { background:#FEE500; color:#111; } .c.nv { background:#03C75A; }
-    .divider { height:1px; background:#eee; margin:16px 0; }
-    label { display:block; font-size:12px; color:#333; font-weight:900; margin-top:14px; }
+    body { font-family:Pretendard, system-ui; background:#fff; margin:0; padding:0;
+      display:flex; justify-content:center; align-items:flex-start; min-height:100vh; }
+    .wrap { width:100%; max-width:520px; padding:24px 18px 40px 18px; }
+    h2 { margin:0 0 14px 0; font-size:22px; }
+    .muted { color:#777; font-size:13px; margin-bottom:18px; }
+
+    .label { font-size:13px; color:#111; font-weight:700; margin:14px 0 6px; }
     .row { display:flex; gap:10px; align-items:center; }
-    input, select { width:100%; padding:12px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box; }
+    .row > * { flex:1; }
+
+    input, select {
+      width:100%; padding:12px 12px; border:1px solid #ddd; border-radius:10px;
+      box-sizing:border-box; font-size:14px; background:#fff;
+    }
     input:focus, select:focus { outline:none; border-color:#111; }
-    .btn { width:100%; padding:13px; background:#111; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:900; margin-top:14px; }
-    .btn2 { padding:12px 12px; background:#f2f2f2; color:#111; border:none; border-radius:6px; cursor:pointer; font-weight:900; white-space:nowrap; }
+
+    .at { flex:0 0 auto; color:#666; font-weight:700; }
+
+    .btn-wide {
+      width:100%; padding:12px; border-radius:10px;
+      border:1px solid #ddd; background:#f7f7f7; color:#111;
+      font-weight:800; cursor:pointer; margin-top:10px;
+    }
+    .btn { width:100%; padding:14px; background:#111; color:#fff; border:none; border-radius:12px;
+      cursor:pointer; font-weight:800; margin-top:14px; }
+
     .msg { margin-top:10px; font-size:13px; color:#444; }
-    .err { color:#c00; font-weight:900; }
-    .ok { color:#0a7; font-weight:900; }
-    .agreements { border:1px solid #eee; border-radius:8px; padding:12px; margin-top:14px; }
-    .agreements .line { display:flex; align-items:center; gap:8px; margin:10px 0; font-size:13px; color:#333; }
-    .agreements small { color:#777; }
-    .hint { font-size:12px; color:#777; margin-top:6px; }
-    .debug { background:#fff7cc; padding:10px; border-radius:8px; font-size:13px; margin-top:10px; display:none; }
-    .foot { text-align:center; margin-top:14px; font-size:13px; color:#666; }
-    .foot a { color:#333; text-decoration:underline; }
+    .err { color:#c00; }
+    .ok { color:#0a7; }
+    a { color:#333; }
+
+    /* 약관 박스 */
+    .terms-box {
+      border:1px solid #eee; border-radius:14px; padding:14px 14px; margin-top:10px;
+      background:#fff;
+    }
+    .terms-head {
+      display:flex; justify-content:space-between; align-items:center; padding-bottom:10px; border-bottom:1px solid #f2f2f2;
+      font-weight:800; font-size:14px;
+    }
+    .terms-item {
+      display:flex; justify-content:space-between; align-items:center;
+      padding:12px 0; border-bottom:1px solid #f6f6f6;
+      font-size:14px;
+    }
+    .terms-item:last-child{ border-bottom:none; }
+    .left {
+      display:flex; align-items:center; gap:10px;
+    }
+    .right {
+      display:flex; align-items:center; gap:10px;
+      color:#777; font-size:12px;
+    }
+    .tag {
+      font-size:12px; font-weight:800;
+      padding:3px 8px; border-radius:999px;
+      background:#f1f1f1; color:#111;
+    }
+    .tag.req { background:#e8fff3; color:#0a7; }
+    .tag.opt { background:#f3f3ff; color:#556; }
+    .tiny { font-size:12px; color:#777; margin-top:6px; }
+    .debug { background:#fff7cc; padding:10px; border-radius:10px; font-size:13px; margin-top:10px; display:none; }
   </style>
 </head>
 <body>
-  <div class="top">
-    <div class="brand">오세요</div>
-  </div>
-
   <div class="wrap">
-    <div class="title">회원가입</div>
-    <div style="text-align:center; font-size:12px; color:#777;">SNS계정으로 간편하게 회원가입</div>
-    <div class="sns">
-      <div class="c fb">f</div>
-      <div class="c kk">톡</div>
-      <div class="c nv">N</div>
-    </div>
+    <h2>회원가입</h2>
+    <div class="muted">이메일 인증 후 가입을 완료해 주세요.</div>
 
-    <div class="divider"></div>
-
-    <label>이메일</label>
+    <div class="label">이메일</div>
     <div class="row">
       <input id="emailId" placeholder="아이디" />
-      <span style="font-weight:900;color:#666;">@</span>
-      <select id="emailDomainSel" onchange="onDomainChange()">
+      <div class="at">@</div>
+      <select id="emailDomain" onchange="onDomainChange()">
         <option value="">선택해주세요</option>
         <option value="gmail.com">gmail.com</option>
         <option value="naver.com">naver.com</option>
         <option value="daum.net">daum.net</option>
+        <option value="hanmail.net">hanmail.net</option>
+        <option value="kakao.com">kakao.com</option>
         <option value="_custom">직접입력</option>
       </select>
     </div>
-    <input id="emailDomainCustom" placeholder="도메인 직접입력 (예: company.com)" style="display:none; margin-top:10px;" />
-    <button class="btn2" type="button" onclick="sendOtp()" style="width:100%; margin-top:10px;">이메일 인증하기</button>
+    <div id="customDomainRow" class="row" style="margin-top:10px; display:none;">
+      <input id="emailDomainCustom" placeholder="도메인 직접입력 (예: mycompany.com)" />
+    </div>
 
-    <label style="margin-top:14px;">인증번호</label>
+    <button class="btn-wide" type="button" onclick="sendOtp()">이메일 인증하기</button>
+
+    <div class="label">인증번호</div>
     <input id="otp" placeholder="인증번호 6자리" />
     <div id="otpMsg" class="msg"></div>
     <div id="debugBox" class="debug"></div>
@@ -1338,20 +1441,19 @@ def signup_page():
       <input id="usernameHidden" name="username" type="hidden" />
       <input id="otpHidden" name="otp" type="hidden" />
 
-      <label>비밀번호</label>
-      <input id="pw1" name="password" type="password" placeholder="비밀번호" required />
-      <div class="hint">영문/숫자 포함 8자 이상 권장</div>
+      <div class="label">비밀번호</div>
+      <input id="pw" name="password" type="password" placeholder="비밀번호" required />
+      <div class="tiny">영문/숫자 포함 8자 이상 권장</div>
 
-      <label>비밀번호 확인</label>
-      <input id="pw2" type="password" placeholder="비밀번호 확인" required />
+      <div class="label">비밀번호 확인</div>
+      <input id="pw2" name="password2" type="password" placeholder="비밀번호 확인" required />
 
-      <!-- 기존 기능 유지: 이름/성별/생년월일 -->
-      <label>이름</label>
+      <div class="label">이름</div>
       <input name="name" placeholder="이름" required />
 
-      <div class="row">
-        <div style="flex:1;">
-          <label>성별</label>
+      <div class="row" style="margin-top:10px;">
+        <div>
+          <div class="label" style="margin:0 0 6px;">성별</div>
           <select name="gender" required>
             <option value="">선택해주세요</option>
             <option value="F">여성</option>
@@ -1359,54 +1461,82 @@ def signup_page():
             <option value="N">선택안함</option>
           </select>
         </div>
-        <div style="flex:1;">
-          <label>생년월일</label>
+        <div>
+          <div class="label" style="margin:0 0 6px;">생년월일</div>
           <input name="birth" type="date" required />
         </div>
       </div>
 
-      <label>약관동의</label>
-      <div class="agreements">
-        <div class="line"><input type="checkbox" id="agreeAll" onchange="toggleAll()"> <b>전체동의</b> <small>(선택항목 포함)</small></div>
-        <div class="divider"></div>
-        <div class="line"><input type="checkbox" class="ag req" id="agAge"> 만 14세 이상입니다 <b style="color:#0a7;">(필수)</b></div>
-        <div class="line"><input type="checkbox" class="ag req" id="agTerms"> 이용약관 동의 <b style="color:#0a7;">(필수)</b></div>
-        <div class="line"><input type="checkbox" class="ag req" id="agPrivacy"> 개인정보 처리방침 동의 <b style="color:#0a7;">(필수)</b></div>
-        <div class="line"><input type="checkbox" class="ag" id="agMarketing"> 마케팅 수신 동의 <small>(선택)</small></div>
+      <div class="label" style="margin-top:18px;">약관동의</div>
+      <div class="terms-box">
+        <div class="terms-head">
+          <div class="left">
+            <input type="checkbox" id="t_all" onclick="toggleAllTerms(this)">
+            <label for="t_all" style="cursor:pointer;">전체 동의</label>
+          </div>
+          <div class="right">(선택항목 포함)</div>
+        </div>
+
+        <div class="terms-item">
+          <div class="left">
+            <input type="checkbox" id="t_age" class="t_req">
+            <label for="t_age" style="cursor:pointer;">만 14세 이상입니다</label>
+          </div>
+          <div class="right"><span class="tag req">필수</span></div>
+        </div>
+
+        <div class="terms-item">
+          <div class="left">
+            <input type="checkbox" id="t_terms" class="t_req">
+            <label for="t_terms" style="cursor:pointer;">이용약관 동의</label>
+          </div>
+          <div class="right"><span class="tag req">필수</span></div>
+        </div>
+
+        <div class="terms-item">
+          <div class="left">
+            <input type="checkbox" id="t_priv" class="t_req">
+            <label for="t_priv" style="cursor:pointer;">개인정보 처리방침 동의</label>
+          </div>
+          <div class="right"><span class="tag req">필수</span></div>
+        </div>
+
+        <div class="terms-item">
+          <div class="left">
+            <input type="checkbox" id="t_mkt">
+            <label for="t_mkt" style="cursor:pointer;">마케팅 수신 동의</label>
+          </div>
+          <div class="right"><span class="tag opt">선택</span></div>
+        </div>
       </div>
 
       <button class="btn" type="submit">회원가입하기</button>
-
-      <div class="foot">
+      <p style="margin-top:12px;font-size:13px;color:#666; text-align:center;">
         이미 아이디가 있으신가요? <a href="/login">로그인</a>
-      </div>
+      </p>
     </form>
   </div>
 
 <script>
   function onDomainChange(){
-    const sel = document.getElementById("emailDomainSel").value;
-    const c = document.getElementById("emailDomainCustom");
-    if(sel === "_custom"){
-      c.style.display = "block";
-    }else{
-      c.style.display = "none";
-      c.value = "";
-    }
+    const sel = document.getElementById("emailDomain").value;
+    const row = document.getElementById("customDomainRow");
+    row.style.display = (sel === "_custom") ? "flex" : "none";
   }
 
-  function buildEmail(){
-    const id = (document.getElementById("emailId").value || "").trim();
-    const sel = document.getElementById("emailDomainSel").value;
-    const custom = (document.getElementById("emailDomainCustom").value || "").trim();
-    let domain = sel;
-    if(sel === "_custom") domain = custom;
-    if(!id || !domain) return "";
-    return (id + "@" + domain).trim();
+  function getFullEmail(){
+    const id = document.getElementById("emailId").value.trim();
+    const domSel = document.getElementById("emailDomain").value.trim();
+    const domCustom = document.getElementById("emailDomainCustom").value.trim();
+    if(!id) return "";
+    if(!domSel) return "";
+    const dom = (domSel === "_custom") ? domCustom : domSel;
+    if(!dom) return "";
+    return id + "@" + dom;
   }
 
   async function sendOtp() {
-    const email = buildEmail();
+    const email = getFullEmail();
     const msgEl = document.getElementById("otpMsg");
     const dbg = document.getElementById("debugBox");
     msgEl.textContent = "";
@@ -1414,7 +1544,7 @@ def signup_page():
     dbg.textContent = "";
 
     if (!email) {
-      msgEl.innerHTML = '<span class="err">이메일을 완성해 주세요.</span>';
+      msgEl.innerHTML = '<span class="err">이메일 아이디/도메인을 입력해 주세요.</span>';
       return;
     }
 
@@ -1440,37 +1570,41 @@ def signup_page():
     }
   }
 
-  function toggleAll(){
-    const all = document.getElementById("agreeAll").checked;
-    document.querySelectorAll(".ag").forEach(x => x.checked = all);
+  function toggleAllTerms(box){
+    const all = box.checked;
+    document.getElementById("t_age").checked = all;
+    document.getElementById("t_terms").checked = all;
+    document.getElementById("t_priv").checked = all;
+    document.getElementById("t_mkt").checked = all;
   }
 
   function beforeSubmit() {
-    const email = buildEmail();
-    const otp = (document.getElementById("otp").value || "").trim();
-    const pw1 = document.getElementById("pw1").value || "";
-    const pw2 = document.getElementById("pw2").value || "";
+    const email = getFullEmail();
+    const otp = document.getElementById("otp").value.trim();
 
-    if(!email){
-      alert("이메일을 완성해 주세요.");
-      return false;
-    }
-    if(!otp){
-      alert("인증번호를 입력해 주세요.");
-      return false;
-    }
-    if(pw1 !== pw2){
+    const pw = document.getElementById("pw").value;
+    const pw2 = document.getElementById("pw2").value;
+    if(pw !== pw2){
       alert("비밀번호가 일치하지 않습니다.");
       return false;
     }
 
     // 필수 약관 체크
-    const reqs = ["agAge","agTerms","agPrivacy"];
+    const reqs = ["t_age","t_terms","t_priv"];
     for(const id of reqs){
       if(!document.getElementById(id).checked){
         alert("필수 약관에 동의해 주세요.");
         return false;
       }
+    }
+
+    if (!email) {
+      alert("이메일을 입력해 주세요.");
+      return false;
+    }
+    if (!otp) {
+      alert("인증번호를 입력해 주세요.");
+      return false;
     }
 
     document.getElementById("usernameHidden").value = email;
@@ -1480,7 +1614,7 @@ def signup_page():
 </script>
 </body>
 </html>
-"""
+    """
     return HTMLResponse(html_content)
 
 @app.post("/signup")
@@ -1488,11 +1622,15 @@ def signup(
     username: str = Form(...),
     otp: str = Form(...),
     password: str = Form(...),
+    password2: str = Form(...),
     name: str = Form(...),
     gender: str = Form(...),
     birth: str = Form(...),
 ):
     email = normalize_email(username)
+
+    if password != password2:
+        return HTMLResponse("<script>alert('비밀번호가 일치하지 않습니다.');history.back();</script>")
 
     if not verify_email_otp(email, otp):
         return HTMLResponse("<script>alert('이메일 인증번호가 올바르지 않거나 만료되었습니다.');history.back();</script>")
@@ -1539,454 +1677,476 @@ def logout():
 
 
 # -----------------------------
-# API: 이벤트 HTML/JSON
+# API: 이벤트/참여
 # -----------------------------
-def fetch_events_rows():
-    with db_conn() as con:
-        rows = con.execute(
-            """
-            SELECT id, title, photo, start, end, addr, lat, lng, created_at, user_id, capacity
-            FROM events
-            ORDER BY created_at DESC
-            """
-        ).fetchall()
-    return rows
-
-@app.get("/api/events_json")
-def api_events_json(request: Request):
-    user = get_current_user_fastapi(request)
-    user_id = user["id"] if user else None
-    joined_id = get_joined_event_id(user_id) if user_id else None
-    counts = get_event_counts()
-
-    data = []
-    for r in fetch_events_rows():
-        eid, title, photo, start, end, addr, lat, lng, created_at, owner, cap = r
-        cap = int(cap or 0) or 10
-        c = counts.get(eid, 0)
-        ended = is_ended(end)
-        data.append({
-            "id": eid,
-            "title": title or "",
-            "photo": photo or "",
-            "start": start or "",
-            "end": end or "",
-            "addr": addr or "",
-            "lat": float(lat or 0),
-            "lng": float(lng or 0),
-            "capacity": cap,
-            "count": c,
-            "ended": ended,
-            "remain": remain_str(end),
-            "is_joined": (joined_id == eid) if user_id else False,
-            "joined_event_id": joined_id or "",
-        })
-    return JSONResponse({"ok": True, "events": data, "joined_event_id": joined_id or ""}, headers={"Cache-Control":"no-store"})
-
-@app.get("/api/events_html")
-def api_events_html(request: Request):
-    user = get_current_user_fastapi(request)
-    user_id = user["id"] if user else None
-    joined_id = get_joined_event_id(user_id) if user_id else None
-    counts = get_event_counts()
-
-    rows = fetch_events_rows()
-
-    # 참여중 카드
-    sticky = "<div class='joined-sticky'><div class='joined-title'>참여중인 활동</div>"
-    joined_row = next((r for r in rows if r[0] == joined_id), None) if joined_id else None
-    if not joined_row:
-        sticky += "<div class='joined-empty'>현재 참여중인 활동이 없습니다.</div></div>"
-    else:
-        eid, title, photo, start, end, addr, lat, lng, created_at, owner, cap = joined_row
-        cap = int(cap or 0) or 10
-        c = counts.get(eid, 0)
-        ended = is_ended(end)
-        remain = remain_str(end)
-
-        img_html = f"<img class='event-photo' style='margin-bottom:10px;' src='data:image/jpeg;base64,{photo}' />" if photo else \
-                   "<div class='event-photo' style='display:flex;align-items:center;justify-content:center;color:#ccc;margin-bottom:10px;'>NO IMAGE</div>"
-
-        # 버튼
-        btn = ""
-        if not ended:
-            btn = f"""
-              <button class="join-btn danger" onclick="OSEYO.leave('{eid}')">빠지기</button>
-            """
-        sticky += f"""
-          <div class="event-card {'event-ended' if ended else ''}" style="margin-bottom:0;">
-            {img_html}
-            <div class="event-info">
-              <div class="event-title">{safe(title)}</div>
-              <div class="event-meta">⏰ {safe(start)} <span style="color:#999;">· {safe(remain)}</span></div>
-              <div class="event-meta">📍 {safe(addr or "장소 미정")}</div>
-              <div class="join-row">
-                <div class="join-count">👥 {c}/{cap}</div>
-                {btn}
-              </div>
-              {"<div class='badge-ended'>종료됨</div>" if ended else ""}
-            </div>
-          </div>
-        </div>
-        """
-
-    # 목록
-    if not rows:
-        return HTMLResponse(sticky + "<div style='text-align:center; padding:60px 20px; color:#999;'>등록된 이벤트가 없습니다.<br>오른쪽 아래 버튼을 눌러 시작해보세요.</div>")
-
-    out = sticky + "<div style='padding:0 24px 80px 24px;'>"
-
-    for r in rows:
-        eid, title, photo, start, end, addr, lat, lng, created_at, owner, cap = r
-        cap = int(cap or 0) or 10
-        c = counts.get(eid, 0)
-        ended = is_ended(end)
-        remain = remain_str(end)
-        is_joined = (joined_id == eid) if user_id else False
-
-        img_html = f"<img class='event-photo' src='data:image/jpeg;base64,{photo}' />" if photo else \
-                   "<div class='event-photo' style='display:flex;align-items:center;justify-content:center;color:#ccc;'>NO IMAGE</div>"
-
-        # 버튼 상태
-        btn_html = ""
-        if not ended:
-            if is_joined:
-                btn_html = f'<button class="join-btn danger" onclick="OSEYO.leave(\'{eid}\')">빠지기</button>'
-            else:
-                if joined_id and joined_id != eid:
-                    btn_html = '<button class="join-btn gray" disabled>다른 활동 참여중</button>'
-                elif c >= cap:
-                    btn_html = '<button class="join-btn gray" disabled>정원마감</button>'
-                else:
-                    btn_html = f'<button class="join-btn primary" onclick="OSEYO.join(\'{eid}\')">참여하기</button>'
-
-        out += f"""
-        <div class='event-card {"event-ended" if ended else ""}'>
-          {img_html}
-          <div class='event-info'>
-            <div class='event-title'>{safe(title)}</div>
-            <div class='event-meta'>⏰ {safe(start)} <span style="color:#999;">· {safe(remain)}</span></div>
-            <div class='event-meta'>📍 {safe(addr or "장소 미정")}</div>
-            <div class='join-row'>
-              <div class='join-count'>👥 {c}/{cap}</div>
-              {btn_html}
-            </div>
-            {"<div class='badge-ended'>종료됨</div>" if ended else ""}
-          </div>
-        </div>
-        """
-
-    out += "</div>"
-    return HTMLResponse(out, headers={"Cache-Control":"no-store"})
-
-
-# -----------------------------
-# API: 참여/빠지기
-# -----------------------------
-@app.post("/api/join_event")
-async def api_join_event(request: Request):
-    user = get_current_user_fastapi(request)
+@app.get("/api/events")
+def api_events(request: Request):
+    user = get_current_user_api(request)
     if not user:
         return JSONResponse({"ok": False, "message": "로그인이 필요합니다."}, status_code=401)
+    joined, events = get_events_for_api(user["id"])
+    return {"ok": True, "joined": joined, "events": events}
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-
-    event_id = (payload.get("event_id") or "").strip()
-    if not event_id:
-        return JSONResponse({"ok": False, "message": "이벤트 id가 없습니다."}, status_code=400)
-
-    with db_conn() as con:
-        ev = con.execute(
-            "SELECT id, end, capacity FROM events WHERE id=?",
-            (event_id,),
-        ).fetchone()
-        if not ev:
-            return JSONResponse({"ok": False, "message": "이벤트를 찾을 수 없습니다."}, status_code=404)
-
-        _id, end, cap = ev
-        if is_ended(end):
-            return JSONResponse({"ok": False, "message": "이미 종료된 이벤트입니다."}, status_code=400)
-
-        cap = int(cap or 0) or 10
-        c = con.execute("SELECT COUNT(*) FROM event_members WHERE event_id=?", (event_id,)).fetchone()[0]
-        if c >= cap:
-            return JSONResponse({"ok": False, "message": "정원이 가득 찼습니다."}, status_code=400)
-
-        # 이미 다른 이벤트 참여중인지
-        row = con.execute("SELECT event_id FROM event_members WHERE user_id=?", (user["id"],)).fetchone()
-        if row and row[0] != event_id:
-            return JSONResponse({"ok": False, "message": "이미 다른 활동에 참여중입니다. 먼저 빠지기 해주세요."}, status_code=400)
-
-        # 참여(이미 참여면 OK)
-        con.execute(
-            """
-            INSERT INTO event_members (event_id, user_id, joined_at)
-            VALUES (?,?,?)
-            ON CONFLICT(user_id) DO UPDATE SET
-              event_id=excluded.event_id,
-              joined_at=excluded.joined_at
-            """,
-            (event_id, user["id"], now_kst().isoformat(timespec="seconds")),
-        )
-        con.commit()
-
-    return JSONResponse({"ok": True, "message": "참여했습니다."}, headers={"Cache-Control":"no-store"})
-
-@app.post("/api/leave_event")
-async def api_leave_event(request: Request):
-    user = get_current_user_fastapi(request)
+@app.post("/api/events/{event_id}/join")
+def api_join(event_id: str, request: Request):
+    user = get_current_user_api(request)
     if not user:
         return JSONResponse({"ok": False, "message": "로그인이 필요합니다."}, status_code=401)
+    ok, msg, cur = join_event_api(user["id"], event_id)
+    if not ok:
+        return JSONResponse({"ok": False, "message": msg, "current_event_id": cur}, status_code=400)
+    joined, events = get_events_for_api(user["id"])
+    return {"ok": True, "message": msg, "joined": joined, "events": events}
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-
-    event_id = (payload.get("event_id") or "").strip()
-    if not event_id:
-        return JSONResponse({"ok": False, "message": "이벤트 id가 없습니다."}, status_code=400)
-
-    with db_conn() as con:
-        con.execute("DELETE FROM event_members WHERE user_id=? AND event_id=?", (user["id"], event_id))
-        con.commit()
-
-    return JSONResponse({"ok": True, "message": "빠졌습니다."}, headers={"Cache-Control":"no-store"})
+@app.post("/api/events/{event_id}/leave")
+def api_leave(event_id: str, request: Request):
+    user = get_current_user_api(request)
+    if not user:
+        return JSONResponse({"ok": False, "message": "로그인이 필요합니다."}, status_code=401)
+    ok, msg = leave_event_api(user["id"], event_id)
+    if not ok:
+        return JSONResponse({"ok": False, "message": msg}, status_code=400)
+    joined, events = get_events_for_api(user["id"])
+    return {"ok": True, "message": msg, "joined": joined, "events": events}
 
 
-# =========================================================
-# 8) Map (Kakao 지도) - ✅ 버튼 갱신/동기화/인포윈도우 유지
-# =========================================================
-MAP_TEMPLATE = """
+# -----------------------------
+# 탐색 페이지 (참여중인 활동 상단 고정 + 참여/빠지기 즉시 동작)
+# -----------------------------
+@app.get("/explore")
+def explore_page():
+    # ✅ iframe 내부 페이지: JS로 /api/events를 fetch하여 렌더링
+    html_content = """
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>오세요 - 탐색</title>
   <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-    body{margin:0; font-family:Pretendard, system-ui;}
-    #bar{
-      position:fixed; top:0; left:0; right:0; z-index:9999;
-      background:#fff; border-bottom:1px solid #eee;
-      padding:12px 12px;
+    body { margin:0; font-family:Pretendard, system-ui; background:#fff; }
+    .wrap { max-width:520px; margin:0 auto; padding:14px 10px 28px 10px; }
+    .section-title { font-size:15px; font-weight:900; margin:10px 6px 10px; color:#111; }
+    .muted { font-size:12px; color:#777; margin:0 6px 12px; }
+
+    .card { margin: 0 6px 16px; border-radius:16px; overflow:hidden; border:1px solid #eee; background:#fff; }
+    .photo {
+      width:100%;
+      aspect-ratio: 16/9;
+      object-fit:cover;
+      background:#f3f3f3;
+      display:block;
     }
-    #bar h3{margin:0 0 8px 0; font-size:14px; font-weight:900;}
-    #bar .empty{
-      font-size:13px; color:#777; background:#fafafa; border:1px solid #eee;
-      padding:10px 12px; border-radius:12px;
+    .body { padding:12px 12px 14px; }
+    .title-row { display:flex; gap:10px; align-items:flex-start; justify-content:space-between; }
+    .title { font-size:16px; font-weight:900; color:#111; line-height:1.35; }
+    .meta { margin-top:8px; font-size:13px; color:#555; display:flex; gap:8px; flex-wrap:wrap; }
+    .meta span { display:inline-flex; gap:6px; align-items:center; }
+    .footer { margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .cap { font-size:12px; color:#777; font-weight:800; }
+    .btn {
+      padding:10px 12px; border-radius:12px; border:none; cursor:pointer; font-weight:900; font-size:13px;
     }
-    #bar .card{
-      border:1px solid #eee; border-radius:12px; padding:10px 12px;
-      display:flex; justify-content:space-between; align-items:center; gap:10px;
-      box-shadow:0 4px 12px rgba(0,0,0,0.05);
-    }
-    #bar .meta{font-size:12px; color:#666; margin-top:4px;}
-    #bar .btn{
-      padding:10px 12px; border:none; border-radius:10px; font-weight:900; cursor:pointer;
-      background:#ffe8e8; color:#b00020;
-      white-space:nowrap;
-    }
-    #m{width:100%; height:100vh; padding-top:92px; box-sizing:border-box;}
-    .iw{padding:10px; width:220px;}
-    .iw-title{font-weight:900; font-size:14px;}
-    .iw-meta{font-size:12px; margin-top:4px; color:#666;}
-    .iw-img{width:100%; height:110px; object-fit:cover; border-radius:8px; margin-top:8px; border:1px solid #eee;}
-    .iw-row{display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:10px;}
-    .iw-count{font-size:12px; color:#555;}
-    .iw-btn{padding:8px 10px; border:none; border-radius:10px; font-weight:900; cursor:pointer;}
-    .iw-btn.primary{background:#111; color:#fff;}
-    .iw-btn.gray{background:#f0f0f0; color:#333; cursor:not-allowed;}
-    .iw-btn.danger{background:#ffe8e8; color:#b00020;}
-    .ended{opacity:.65; filter:grayscale(1);}
+    .btn-join { background:#111; color:#fff; }
+    .btn-leave { background:#f1f1f1; color:#111; }
+    .btn-disabled { opacity:0.35; cursor:not-allowed; }
+    .pill { font-size:12px; font-weight:900; padding:4px 8px; border-radius:999px; background:#f3f3f3; color:#111; }
+    .toast { position:fixed; left:50%; transform:translateX(-50%); bottom:12px; background:#111; color:#fff;
+      padding:10px 12px; border-radius:999px; font-size:13px; display:none; z-index:9999; }
   </style>
 </head>
 <body>
-  <div id="bar">
-    <h3>참여중인 활동</h3>
-    <div id="barContent" class="empty">현재 참여중인 활동이 없습니다.</div>
+  <div class="wrap">
+    <div id="joinedBox"></div>
+    <div class="section-title">열려 있는 활동</div>
+    <div class="muted">참여하기는 1개 활동만 가능하다. 다른 활동에 참여하려면 먼저 빠지기를 해야 한다.</div>
+    <div id="list"></div>
   </div>
+  <div id="toast" class="toast"></div>
 
-  <div id="m"></div>
+<script>
+  function esc(s){
+    return String(s||"")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
 
-  <script>
-    const KAKAO_KEY = "__KAKAO_JS_KEY__";
-    if(!KAKAO_KEY){
-      document.getElementById("m").innerHTML = "<div style='padding:40px; text-align:center; color:#c00;'>KAKAO_JAVASCRIPT_KEY가 필요합니다.</div>";
+  function toast(msg){
+    const t = document.getElementById("toast");
+    t.textContent = msg || "";
+    t.style.display = "block";
+    setTimeout(()=>{ t.style.display="none"; }, 1400);
+  }
+
+  function capText(ev){
+    const cap = (ev.capacity_text || "∞");
+    return `${ev.count}/${cap}`;
+  }
+
+  function buildCard(ev, isJoinedSection){
+    const img = ev.photo ? `<img class="photo" src="data:image/jpeg;base64,${ev.photo}">` : `<div class="photo"></div>`;
+    const left = ev.time_left ? ` · <span class="pill">${esc(ev.time_left)}</span>` : ``;
+
+    let btnHtml = "";
+    if(ev.joined_by_me){
+      btnHtml = `<button class="btn btn-leave" onclick="leaveEvent('${ev.id}')">빠지기</button>`;
+    } else {
+      const full = (ev.capacity && ev.capacity>0 && ev.count >= ev.capacity);
+      const dis = full ? "btn-disabled" : "";
+      const disAttr = full ? "disabled" : "";
+      btnHtml = `<button class="btn btn-join ${dis}" ${disAttr} onclick="joinEvent('${ev.id}')">참여하기</button>`;
     }
-  </script>
 
-  <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey=__KAKAO_JS_KEY__"></script>
+    return `
+      <div class="card">
+        ${img}
+        <div class="body">
+          <div class="title-row">
+            <div class="title">${esc(ev.title)}</div>
+          </div>
+          <div class="meta">
+            <span>⏰ ${esc(ev.start_text || ev.start || "")}${left}</span>
+            <span>📍 ${esc(ev.addr || "장소 미정")}</span>
+          </div>
+          <div class="footer">
+            <div class="cap">👥 ${capText(ev)}</div>
+            ${btnHtml}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function render(data){
+    const joinedBox = document.getElementById("joinedBox");
+    const list = document.getElementById("list");
+    joinedBox.innerHTML = "";
+
+    if(data.joined){
+      joinedBox.innerHTML = `
+        <div class="section-title">참여중인 활동</div>
+        ${buildCard(data.joined, true)}
+      `;
+    }
+
+    const items = (data.events || []);
+    if(!items.length){
+      list.innerHTML = "<div style='padding:60px 12px; text-align:center; color:#999;'>열려 있는 활동이 없다.</div>";
+      return;
+    }
+    // 참여중인 활동은 목록에서 중복 제거(위에 고정 표시되므로)
+    const filtered = data.joined ? items.filter(x => x.id !== data.joined.id) : items;
+    list.innerHTML = filtered.map(ev => buildCard(ev, false)).join("");
+  }
+
+  async function load(){
+    const r = await fetch("/api/events");
+    const d = await r.json();
+    if(!r.ok || !d.ok){
+      render({joined:null, events:[]});
+      return;
+    }
+    render(d);
+  }
+
+  async function joinEvent(id){
+    try{
+      const r = await fetch(`/api/events/${id}/join`, {method:"POST"});
+      const d = await r.json();
+      if(!r.ok || !d.ok){
+        toast(d.message || "참여 실패");
+        return;
+      }
+      render(d);
+      toast("참여했다");
+      // ✅ 다른 탭(지도)도 즉시 갱신
+      window.parent && window.parent.postMessage({type:"REFRESH_ALL"}, "*");
+    }catch(e){
+      toast("네트워크 오류");
+    }
+  }
+
+  async function leaveEvent(id){
+    try{
+      const r = await fetch(`/api/events/${id}/leave`, {method:"POST"});
+      const d = await r.json();
+      if(!r.ok || !d.ok){
+        toast(d.message || "빠지기 실패");
+        return;
+      }
+      render(d);
+      toast("빠졌다");
+      window.parent && window.parent.postMessage({type:"REFRESH_ALL"}, "*");
+    }catch(e){
+      toast("네트워크 오류");
+    }
+  }
+
+  window.addEventListener("message", (e)=>{
+    if(e && e.data && e.data.type==="REFRESH"){
+      load();
+    }
+  });
+
+  load();
+</script>
+</body>
+</html>
+    """
+    return HTMLResponse(html_content)
+
+
+# -----------------------------
+# 지도 페이지 (종료된 이벤트 숨김 + 참여/빠지기 + 인포윈도우 유지하며 버튼 갱신)
+# -----------------------------
+@app.get("/map")
+def map_page():
+    if not KAKAO_JAVASCRIPT_KEY:
+        return HTMLResponse("<div style='padding:30px;font-family:sans-serif;'>KAKAO_JAVASCRIPT_KEY가 필요합니다.</div>")
+
+    html_content = f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>오세요 - 지도</title>
+  <style>
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    body {{ margin:0; font-family:Pretendard, system-ui; }}
+    #m {{ width:100%; height:100vh; }}
+    .panel {{
+      position: absolute; top: 10px; left: 10px; right: 10px;
+      max-width:520px; margin:0 auto;
+      background: rgba(255,255,255,0.98);
+      border:1px solid #eee; border-radius:16px;
+      padding:12px 12px; z-index:9999;
+    }}
+    .panel-title {{ font-weight:900; font-size:14px; margin-bottom:8px; }}
+    .panel-card {{
+      border:1px solid #eee; border-radius:14px; overflow:hidden; background:#fff;
+    }}
+    .panel-body {{ padding:10px 10px; }}
+    .iw-img {{ width:100%; height:110px; object-fit:cover; border-radius:10px; margin-top:8px; background:#f3f3f3; }}
+    .iw-title {{ font-weight:900; font-size:14px; }}
+    .iw-meta {{ font-size:12px; margin-top:6px; color:#666; display:flex; gap:8px; flex-wrap:wrap; }}
+    .iw-footer {{ margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:10px; }}
+    .btn {{
+      padding:9px 10px; border-radius:12px; border:none; cursor:pointer; font-weight_known:900;
+      font-weight:900; font-size:12px;
+    }}
+    .btn-join {{ background:#111; color:#fff; }}
+    .btn-leave {{ background:#f1f1f1; color:#111; }}
+    .btn-disabled {{ opacity:0.35; cursor:not-allowed; }}
+    .cap {{ font-size:12px; color:#777; font-weight:900; }}
+    .pill {{ font-size:12px; font-weight:900; padding:3px 8px; border-radius:999px; background:#f3f3f3; color:#111; }}
+    .toast {{ position:fixed; left:50%; transform:translateX(-50%); bottom:12px; background:#111; color:#fff;
+      padding:10px 12px; border-radius:999px; font-size:13px; display:none; z-index:99999; }}
+  </style>
+</head>
+<body>
+  <div id="m"></div>
+  <div id="panel" class="panel" style="display:none;"></div>
+  <div id="toast" class="toast"></div>
+
+  <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
   <script>
-    function esc(s){
+    function esc(s) {{
       return String(s||"")
         .replaceAll("&","&amp;")
         .replaceAll("<","&lt;")
         .replaceAll(">","&gt;")
         .replaceAll('"',"&quot;")
         .replaceAll("'","&#039;");
-    }
+    }}
 
-    let map = null;
-    let markers = [];
+    function toast(msg){{
+      const t = document.getElementById("toast");
+      t.textContent = msg || "";
+      t.style.display = "block";
+      setTimeout(()=>{{მი t.style.display="none"; }}, 1400);
+    }}
+
+    const map = new kakao.maps.Map(document.getElementById('m'), {{
+      center: new kakao.maps.LatLng(36.019, 129.343),
+      level: 7
+    }});
+
+    let markers = {{}};
+    let eventsMap = {{}};
     let openIw = null;
-    let openEventId = "";
-    let openMarker = null;
+    let openEventId = null;
 
-    async function apiJson(url, body){
-      const r = await fetch(url, {
-        method:"POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(body||{}),
-        credentials:"same-origin"
-      });
-      const data = await r.json().catch(()=>({ok:false, message:"응답 파싱 실패"}));
-      return {ok:r.ok && data.ok, data};
-    }
+    function capText(ev){{
+      const cap = (ev.capacity_text || "∞");
+      return `${{ev.count}}/${{cap}}`;
+    }}
 
-    function setMarkers(events, joinedId){
-      // 기존 마커 제거
-      markers.forEach(m => m.setMap(null));
-      markers = [];
-
-      // 지도 없으면 생성
-      if(!map){
-        map = new kakao.maps.Map(document.getElementById('m'), {
-          center: new kakao.maps.LatLng(36.019, 129.343),
-          level: 7
-        });
-      }
-
-      // 참여중 bar
-      const bar = document.getElementById("barContent");
-      const joined = events.find(e => e.id === joinedId);
-      if(!joined){
-        bar.className = "empty";
-        bar.innerHTML = "현재 참여중인 활동이 없습니다.";
-      }else{
-        bar.className = "card" + (joined.ended ? " ended" : "");
-        const btn = (!joined.ended) ? `<button class="btn" onclick="leaveEvent('${joined.id}')">빠지기</button>` : "";
-        bar.innerHTML = `
-          <div style="flex:1;">
-            <div style="font-weight:900;">${esc(joined.title)}</div>
-            <div class="meta">⏰ ${esc(joined.start)} · ${esc(joined.remain)}</div>
-            <div class="meta">👥 ${joined.count}/${joined.capacity}</div>
-          </div>
-          ${btn}
-        `;
-      }
-
-      events.forEach(e => {
-        if(!e.lat || !e.lng) return;
-
-        const marker = new kakao.maps.Marker({
-          position: new kakao.maps.LatLng(e.lat, e.lng),
-          map: map
-        });
-        markers.push(marker);
-
-        kakao.maps.event.addListener(marker, 'click', () => {
-          openEventId = e.id;
-          openMarker = marker;
-          renderInfo(e, joinedId);
-        });
-      });
-
-      // 열려있던 인포윈도우 유지(가능하면)
-      if(openEventId){
-        const cur = events.find(e => e.id === openEventId);
-        if(cur && openMarker){
-          renderInfo(cur, joinedId);
-        }
-      }
-    }
-
-    function renderInfo(e, joinedId){
-      if(openIw) openIw.close();
-
-      const title = esc(e.title);
-      const addr = esc(e.addr);
-      const start = esc(e.start);
-      const remain = esc(e.remain);
-      const img = e.photo ? `<img class="iw-img" src="data:image/jpeg;base64,${e.photo}">` : "";
+    function buildIwContent(ev){{
+      const img = ev.photo ? `<img class="iw-img" src="data:image/jpeg;base64,${{ev.photo}}">` : `<div class="iw-img"></div>`;
+      const left = ev.time_left ? ` <span class="pill">${{esc(ev.time_left)}}</span>` : ``;
 
       let btn = "";
-      if(!e.ended){
-        if(e.is_joined){
-          btn = `<button class="iw-btn danger" onclick="leaveEvent('${e.id}')">빠지기</button>`;
-        }else if(joinedId && joinedId !== e.id){
-          btn = `<button class="iw-btn gray" disabled>다른 활동 참여중</button>`;
-        }else if(e.count >= e.capacity){
-          btn = `<button class="iw-btn gray" disabled>정원마감</button>`;
-        }else{
-          btn = `<button class="iw-btn primary" onclick="joinEvent('${e.id}')">참여하기</button>`;
-        }
-      }
+      if(ev.joined_by_me){{
+        btn = `<button class="btn btn-leave" onclick="leaveEvent('${{ev.id}}', true)">빠지기</button>`;
+      }} else {{
+        const full = (ev.capacity && ev.capacity>0 && ev.count >= ev.capacity);
+        const dis = full ? "btn-disabled" : "";
+        const disAttr = full ? "disabled" : "";
+        btn = `<button class="btn btn-join ${{dis}}" ${{disAttr}} onclick="joinEvent('${{ev.id}}', true)">참여하기</button>`;
+      }}
 
-      const content = `
-        <div class="iw ${e.ended ? "ended" : ""}">
-          <div class="iw-title">${title}</div>
-          <div class="iw-meta">⏰ ${start} · ${remain}</div>
-          <div class="iw-meta">📍 ${addr}</div>
-          ${img}
-          <div class="iw-row">
-            <div class="iw-count">👥 ${e.count}/${e.capacity}</div>
-            ${btn}
+      return `
+        <div style="padding:10px;width:240px;">
+          <div class="iw-title">${{esc(ev.title)}}</div>
+          <div class="iw-meta">
+            <span>⏰ ${{esc(ev.start_text || ev.start || "")}}</span>
+            ${{left}}
+            <span>📍 ${{esc(ev.addr || "장소 미정")}}</span>
+          </div>
+          ${{img}}
+          <div class="iw-footer">
+            <div class="cap">👥 ${{capText(ev)}}</div>
+            ${{btn}}
           </div>
         </div>
       `;
+    }}
 
-      openIw = new kakao.maps.InfoWindow({ content, removable: true });
-      openIw.open(map, openMarker);
-    }
+    function renderPanel(joined){{
+      const panel = document.getElementById("panel");
+      if(!joined){{
+        panel.style.display = "none";
+        panel.innerHTML = "";
+        return;
+      }}
+      panel.style.display = "block";
+      panel.innerHTML = `
+        <div class="panel-title">참여중인 활동</div>
+        <div class="panel-card">
+          <div class="panel-body">
+            <div style="font-weight:900;">${{esc(joined.title)}}</div>
+            <div style="margin-top:6px;font-size:12px;color:#666;display:flex;gap:8px;flex-wrap:wrap;">
+              <span>⏰ ${{esc(joined.start_text || joined.start || "")}}</span>
+              ${{joined.time_left ? `<span class="pill">${{esc(joined.time_left)}}</span>` : ""}}
+              <span>📍 ${{esc(joined.addr || "장소 미정")}}</span>
+            </div>
+            <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
+              <div class="cap">👥 ${{capText(joined)}}</div>
+              <button class="btn btn-leave" onclick="leaveEvent('${{joined.id}}', false)">빠지기</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }}
 
-    async function refresh(){
-      const r = await fetch("/api/events_json", {cache:"no-store", credentials:"same-origin"});
-      const j = await r.json().catch(()=>({ok:false}));
-      if(!j.ok) return;
-      setMarkers(j.events || [], j.joined_event_id || "");
-    }
+    async function loadData(keepIw){{
+      const r = await fetch("/api/events");
+      const d = await r.json();
+      if(!r.ok || !d.ok) return;
 
-    async function joinEvent(id){
-      const res = await apiJson("/api/join_event", {event_id:id});
-      if(!res.ok){ alert(res.data.message || "참여 실패"); return; }
-      // ✅ 인포윈도우 닫지 않고 내용만 갱신: refresh 후 renderInfo가 다시 세팅
-      await refresh();
-      parent.postMessage({type:"oseyo_refresh_parent"}, "*");
-    }
+      eventsMap = {{}};
+      (d.events||[]).forEach(ev => {{ eventsMap[ev.id] = ev; }});
 
-    async function leaveEvent(id){
-      const res = await apiJson("/api/leave_event", {event_id:id});
-      if(!res.ok){ alert(res.data.message || "빠지기 실패"); return; }
-      await refresh();
-      parent.postMessage({type:"oseyo_refresh_parent"}, "*");
-    }
+      // panel
+      renderPanel(d.joined);
 
-    // parent -> map 갱신
-    window.addEventListener("message", (e)=>{
-      if(!e || !e.data) return;
-      if(e.data.type === "oseyo_refresh_map"){
-        refresh();
-      }
-    });
+      // marker sync
+      const newIds = new Set((d.events||[]).map(x=>x.id));
+      // remove old markers
+      Object.keys(markers).forEach(id => {{
+        if(!newIds.has(id)){{
+          markers[id].setMap(null);
+          delete markers[id];
+        }}
+      }});
+      // add/update markers
+      (d.events||[]).forEach(ev => {{
+        if(!ev.lat || !ev.lng) return;
+        const pos = new kakao.maps.LatLng(ev.lat, ev.lng);
+        if(!markers[ev.id]){{
+          const mk = new kakao.maps.Marker({{
+            position: pos,
+            map: map
+          }});
+          markers[ev.id] = mk;
+          kakao.maps.event.addListener(mk, 'click', () => {{
+            openEventId = ev.id;
+            const cur = eventsMap[ev.id];
+            if(!cur) return;
+            const content = buildIwContent(cur);
+            const iw = new kakao.maps.InfoWindow({{
+              content: content,
+              removable: true
+            }});
+            if(openIw) openIw.close();
+            iw.open(map, mk);
+            openIw = iw;
+          }});
+        }} else {{
+          markers[ev.id].setPosition(pos);
+        }}
+      }});
 
-    window.addEventListener("load", refresh);
+      // keep info window open and just update content
+      if(keepIw && openIw && openEventId && eventsMap[openEventId]){{
+        openIw.setContent(buildIwContent(eventsMap[openEventId]));
+      }}
+    }}
+
+    async function joinEvent(id, keepIw){{
+      try {{
+        const r = await fetch(`/api/events/${{id}}/join`, {{method:"POST"}});
+        const d = await r.json();
+        if(!r.ok || !d.ok){{
+          toast(d.message || "참여 실패");
+          return;
+        }}
+        // info window 유지하면서 내용만 갱신
+        await loadData(true);
+        toast("참여했다");
+        window.parent && window.parent.postMessage({{type:"REFRESH_ALL"}}, "*");
+      }} catch(e) {{
+        toast("네트워크 오류");
+      }}
+    }}
+
+    async function leaveEvent(id, keepIw){{
+      try {{
+        const r = await fetch(`/api/events/${{id}}/leave`, {{method:"POST"}});
+        const d = await r.json();
+        if(!r.ok || !d.ok){{
+          toast(d.message || "빠지기 실패");
+          return;
+        }}
+        await loadData(true);
+        toast("빠졌다");
+        window.parent && window.parent.postMessage({{type:"REFRESH_ALL"}}, "*");
+      }} catch(e) {{
+        toast("네트워크 오류");
+      }}
+    }}
+
+    window.addEventListener("message", (e)=>{{
+      if(e && e.data && e.data.type==="REFRESH") {{
+        loadData(true);
+      }}
+    }});
+
+    loadData(false);
   </script>
 </body>
 </html>
 """
-
-@app.get("/map")
-def map_h():
-    page = MAP_TEMPLATE.replace("__KAKAO_JS_KEY__", KAKAO_JAVASCRIPT_KEY or "")
-    return HTMLResponse(page, headers={"Cache-Control":"no-store"})
+    return HTMLResponse(html_content)
 
 
 # =========================================================
-# 9) Gradio 마운트
+# 10) Gradio 마운트
 # =========================================================
 app = gr.mount_gradio_app(app, demo, path="/app")
 
