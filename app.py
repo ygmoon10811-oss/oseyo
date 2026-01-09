@@ -552,66 +552,7 @@ def get_counts_map():
 def get_list_html(request: gr.Request):
     user = get_current_user(request)
     uid = user["id"] if user else None
-    joined_event = get_joined_event_id(uid) if uid else None
-    counts = get_counts_map()
-
-    with db_conn() as con:
-        rows = con.execute(
-            "SELECT id, title, photo, start, end, addr, capacity FROM events ORDER BY created_at DESC"
-        ).fetchall()
-
-    if not rows:
-        return "<div style='text-align:center; padding:100px 20px; color:#999;'>등록된 이벤트가 없습니다.<br>오른쪽 아래 버튼을 눌러 시작해보세요.</div>"
-
-    out = "<div class='event-wrap' style='padding:0 24px 80px 24px;'>"
-    for ev_id, title, photo, start, end, addr, cap in rows:
-        cap = int(cap or 10)
-        cur = counts.get(ev_id, 0)
-
-        if photo:
-            img_html = f"<img class='event-photo' src='data:image/jpeg;base64,{photo}' />"
-        else:
-            img_html = "<div class='event-photo' style='display:flex;align-items:center;justify-content:center;color:#ccc;'>NO IMAGE</div>"
-
-        try:
-            st_dt = datetime.strptime(start, DT_FMT)
-            time_str = st_dt.strftime("%m월 %d일 %H:%M")
-        except Exception:
-            time_str = start or ""
-
-        left_txt = _human_left(end or "")
-        left_suffix = f" · {left_txt}" if left_txt else ""
-
-        # ✅ 버튼 상태 결정
-        if not uid:
-            btn_html = "<span class='join-btn join-disabled'>로그인 필요</span>"
-        else:
-            if joined_event == ev_id:
-                btn_html = f"<a class='join-btn' href='/leave?event_id={ev_id}'>빠지기</a>"
-            elif joined_event and joined_event != ev_id:
-                btn_html = "<span class='join-btn join-disabled'>다른 이벤트 참여중</span>"
-            else:
-                if cur >= cap:
-                    btn_html = "<span class='join-btn join-disabled'>정원 마감</span>"
-                else:
-                    btn_html = f"<a class='join-btn' href='/join?event_id={ev_id}'>참여하기</a>"
-
-        out += f"""
-        <div class='event-card'>
-          {img_html}
-          <div class='event-info'>
-            <div class='event-title'>{html.escape(title or "")}</div>
-            <div class='event-meta'>⏰ {html.escape(time_str)}{html.escape(left_suffix)}</div>
-            <div class='event-meta'>📍 {html.escape(addr or "장소 미정")}</div>
-
-            <div class='event-actions'>
-              <div class='capacity'>👥 {cur}/{cap}</div>
-              {btn_html}
-            </div>
-          </div>
-        </div>
-        """
-    return out + "</div>"
+    return render_explore_wrapper(uid)
 
 def save_data(title, img, start, end, addr_obj, request: gr.Request):
     user = get_current_user(request)
@@ -759,6 +700,122 @@ def delete_fav(name: str, request: gr.Request):
     favs = get_top_favs(10)
     return "✅ 삭제했습니다.", *fav_buttons_update(favs)
 
+EXPLORE_SCRIPT = """
+<script>
+(function(){
+  if (window.__oseyo_bound) return;
+  window.__oseyo_bound = true;
+
+  async function postJSON(url, payload){
+    const r = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      credentials: "same-origin",
+      body: JSON.stringify(payload || {})
+    });
+    let data = {};
+    try { data = await r.json(); } catch(e) {}
+    return { ok: r.ok && data.ok, status: r.status, data };
+  }
+
+  async function refreshCards(resp){
+    if (resp.data && resp.data.redirect){
+      location.href = resp.data.redirect;
+      return;
+    }
+    if (!resp.ok){
+      alert((resp.data && resp.data.message) ? resp.data.message : "요청 실패");
+      return;
+    }
+
+    const root = document.getElementById("explore_root");
+    if (root) root.innerHTML = resp.data.html || "";
+
+    // ✅ 지도도 즉시 반영(원하면 유지)
+    const iframe = document.getElementById("map_iframe");
+    if (iframe) iframe.src = "/map?ts=" + Date.now();
+  }
+
+  window.oseyoJoin = async function(eventId){
+    const resp = await postJSON("/api/join", { event_id: eventId });
+    await refreshCards(resp);
+  };
+
+  window.oseyoLeave = async function(eventId){
+    const resp = await postJSON("/api/leave", { event_id: eventId });
+    await refreshCards(resp);
+  };
+})();
+</script>
+"""
+
+def render_event_cards(user_id: str | None):
+    # ✅ 기존 get_list_html 내용에서 "out"만 반환하도록 만든다 (wrapper/스크립트 없음)
+    joined_event = get_joined_event_id(user_id) if user_id else None
+    counts = get_counts_map()
+
+    with db_conn() as con:
+        rows = con.execute(
+            "SELECT id, title, photo, start, end, addr, capacity FROM events ORDER BY created_at DESC"
+        ).fetchall()
+
+    if not rows:
+        return "<div style='text-align:center; padding:100px 20px; color:#999;'>등록된 이벤트가 없습니다.<br>오른쪽 아래 버튼을 눌러 시작해보세요.</div>"
+
+    out = "<div class='event-wrap' style='padding:0 24px 80px 24px;'>"
+    for ev_id, title, photo, start, end, addr, cap in rows:
+        cap = int(cap or 10)
+        cur = counts.get(ev_id, 0)
+
+        if photo:
+            img_html = f"<img class='event-photo' src='data:image/jpeg;base64,{photo}' />"
+        else:
+            img_html = "<div class='event-photo' style='display:flex;align-items:center;justify-content:center;color:#ccc;'>NO IMAGE</div>"
+
+        try:
+            st_dt = datetime.strptime(start, DT_FMT)
+            time_str = st_dt.strftime("%m월 %d일 %H:%M")
+        except Exception:
+            time_str = start or ""
+
+        left_txt = _human_left(end or "")
+        left_suffix = f" · {left_txt}" if left_txt else ""
+
+        # ✅ 버튼: a태그가 아니라 onclick 버튼으로 바꾼다
+        if not user_id:
+            btn_html = "<button class='join-btn join-disabled' disabled>로그인 필요</button>"
+        else:
+            if joined_event == ev_id:
+                btn_html = f"<button class='join-btn' onclick=\"oseyoLeave('{ev_id}')\">빠지기</button>"
+            elif joined_event and joined_event != ev_id:
+                btn_html = "<button class='join-btn join-disabled' disabled>다른 이벤트 참여중</button>"
+            else:
+                if cur >= cap:
+                    btn_html = "<button class='join-btn join-disabled' disabled>정원 마감</button>"
+                else:
+                    btn_html = f"<button class='join-btn' onclick=\"oseyoJoin('{ev_id}')\">참여하기</button>"
+
+        out += f"""
+        <div class='event-card'>
+          {img_html}
+          <div class='event-info'>
+            <div class='event-title'>{html.escape(title or "")}</div>
+            <div class='event-meta'>⏰ {html.escape(time_str)}{html.escape(left_suffix)}</div>
+            <div class='event-meta'>📍 {html.escape(addr or "장소 미정")}</div>
+
+            <div class='event-actions'>
+              <div class='capacity'>👥 {cur}/{cap}</div>
+              {btn_html}
+            </div>
+          </div>
+        </div>
+        """
+    return out + "</div>"
+
+def render_explore_wrapper(user_id: str | None):
+    # ✅ wrapper는 1번만 렌더되고, 이후에는 explore_root만 교체된다
+    cards = render_event_cards(user_id)
+    return f"<div id='explore_root'>{cards}</div>{EXPLORE_SCRIPT}"
 
 # =========================================================
 # 6) Gradio UI
@@ -1415,6 +1472,82 @@ def leave_page(event_id: str, request: Request):
 
     return RedirectResponse("/app", status_code=303)
 
+def _current_user_fastapi(request: Request):
+    token = request.cookies.get(COOKIE_NAME)
+    return get_user_by_token(token)
+
+@app.post("/api/join")
+async def api_join(request: Request):
+    user = _current_user_fastapi(request)
+    if not user:
+        return JSONResponse({"ok": False, "message": "로그인이 필요합니다.", "redirect": "/login"}, status_code=401)
+
+    payload = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    event_id = (payload.get("event_id") or "").strip()
+    if not event_id:
+        return JSONResponse({"ok": False, "message": "event_id가 필요합니다."}, status_code=400)
+
+    with db_conn() as con:
+        ev = con.execute("SELECT id, capacity FROM events WHERE id=?", (event_id,)).fetchone()
+        if not ev:
+            return JSONResponse({"ok": False, "message": "이벤트를 찾을 수 없습니다."}, status_code=404)
+
+        cap = int(ev[1] or 10)
+
+        other = con.execute(
+            "SELECT event_id FROM event_participants WHERE user_id=? LIMIT 1",
+            (user["id"],),
+        ).fetchone()
+        if other and other[0] != event_id:
+            return JSONResponse({"ok": False, "message": "이미 다른 이벤트에 참여 중입니다. 먼저 빠지기를 해주세요."}, status_code=409)
+
+        cur = con.execute(
+            "SELECT COUNT(*) FROM event_participants WHERE event_id=?",
+            (event_id,),
+        ).fetchone()[0]
+
+        if cur >= cap:
+            return JSONResponse({"ok": False, "message": "정원이 가득 찼습니다."}, status_code=409)
+
+        try:
+            con.execute(
+                "INSERT INTO event_participants (event_id, user_id, joined_at) VALUES (?,?,?)",
+                (event_id, user["id"], now_kst().isoformat(timespec="seconds")),
+            )
+            con.commit()
+        except Exception:
+            # 이미 참여중이면 무시
+            pass
+
+    # ✅ 참여 후 최신 카드 HTML만 반환
+    return JSONResponse({"ok": True, "html": render_event_cards(user["id"])})
+
+@app.post("/api/leave")
+async def api_leave(request: Request):
+    user = _current_user_fastapi(request)
+    if not user:
+        return JSONResponse({"ok": False, "message": "로그인이 필요합니다.", "redirect": "/login"}, status_code=401)
+
+    payload = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    event_id = (payload.get("event_id") or "").strip()
+    if not event_id:
+        return JSONResponse({"ok": False, "message": "event_id가 필요합니다."}, status_code=400)
+
+    with db_conn() as con:
+        con.execute("DELETE FROM event_participants WHERE event_id=? AND user_id=?", (event_id, user["id"]))
+        con.commit()
+
+    return JSONResponse({"ok": True, "html": render_event_cards(user["id"])})
 
 # =========================================================
 # 8) Map
@@ -1508,3 +1641,4 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
