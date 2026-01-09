@@ -711,7 +711,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     gr.HTML("""
     <div class="header-row">
-        <div class="main-title">지금, <b>열려 있습니다</b><br><span style="font-size:15px; color:#666; font-weight:400;">편하면 오셔도 됩니다</span></div>
+        <div class="main-title">지금, <b>열려 있습니다</b><br><span style="font-size:15px; color:#666; font-weight:400;">원하면 오셔도 됩니다</span></div>
         <a href="/logout" class="logout-link">로그아웃</a>
     </div>
     """)
@@ -1681,4 +1681,5 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
