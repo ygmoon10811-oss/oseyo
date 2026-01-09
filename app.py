@@ -1427,7 +1427,7 @@ async def send_email_otp(request: Request):
 @app.get("/signup")
 def signup_page():
     # ✅ 참고 UI(이미지)에서 '없는 부분'만 추가: 도메인 분리/비번확인/약관/봇체크/SNS 버튼(placeholder)
-    html_content = f"""
+    html_content = """
 <!doctype html>
 <html>
 <head>
@@ -1771,171 +1771,24 @@ async def api_leave(request: Request):
 # =========================================================
 @app.get("/map")
 def map_h():
-    return HTMLResponse(f"""
+    html_page = """
 <!doctype html>
 <html>
 <head>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <style>
-      body{{margin:0;font-family:Pretendard,system-ui;}}
-      .iw-img{{width:100%;height:110px;object-fit:cover;border-radius:10px;margin-top:8px;border:1px solid #eee;}}
-      .iw-title{{font-weight:900;font-size:14px;color:#111;}}
-      .iw-meta{{font-size:12px;margin-top:5px;color:#666;}}
-      .iw-row{{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;}}
-      .pill{{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border-radius:999px;border:1px solid #eee;background:#fafafa;font-size:12px;font-weight:800;color:#333;}}
-      .btn{{padding:9px 10px;border-radius:12px;border:none;font-weight:900;font-size:12px;cursor:pointer;min-width:88px;}}
-      .primary{{background:#111;color:#fff;}}
-      .secondary{{background:#f0f0f0;color:#111;}}
-      .btn:disabled{{opacity:.5;cursor:not-allowed;}}
-    </style>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
 </head>
 <body>
-    <div id="m" style="width:100%;height:100vh;"></div>
-    <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
-    <script>
-      function esc(s) {{
-        return String(s||"")
-          .replaceAll("&","&amp;")
-          .replaceAll("<","&lt;")
-          .replaceAll(">","&gt;")
-          .replaceAll('"',"&quot;")
-          .replaceAll("'","&#039;");
-      }}
-
-      const map = new kakao.maps.Map(document.getElementById('m'), {{
-        center: new kakao.maps.LatLng(36.019, 129.343),
-        level: 7
-      }});
-
-      const store = new Map();
-      let openEventId = null;
-
-      function renderInfo(d){{
-        const title = esc(d.title);
-        const addr = esc(d.addr);
-        const start = esc(d.start_disp || d.start || "");
-        const left = d.time_left ? (" " + esc(d.time_left)) : "";
-        const img = d.photo ? `<img class="iw-img" src="data:image/jpeg;base64,${{d.photo}}">` : "";
-        const cap = Number(d.capacity||10);
-        const participants = Number(d.participants||0);
-        const full = participants >= cap;
-        const joined = !!d.joined;
-        const btnLabel = joined ? "빠지기" : "참여하기";
-        const btnCls = joined ? "btn secondary" : "btn primary";
-        const dis = (!joined && full) ? "disabled" : "";
-        const action = joined ? "leave" : "join";
-
-        return `
-          <div style="padding:10px;width:240px;">
-            <div class="iw-title">${{title}}</div>
-            <div class="iw-meta">⏰ ${{start}}${{left}}</div>
-            <div class="iw-meta">📍 ${{addr}}</div>
-            ${{img}}
-            <div class="iw-row">
-              <div class="pill">👥 ${{participants}} / ${{cap}}</div>
-              <button class="${{btnCls}}" data-oseyo-action="${{action}}" data-eid="${{esc(d.id)}}" ${{dis}}>${{btnLabel}}</button>
-            </div>
-          </div>
-        `;
-      }}
-
-      function upsertEvent(d){{
-        if(!d.lat || !d.lng) return;
-        const pos = new kakao.maps.LatLng(d.lat, d.lng);
-
-        if(!store.has(d.id)){{
-          const marker = new kakao.maps.Marker({{ position: pos, map: map }});
-          const iw = new kakao.maps.InfoWindow({{ content: renderInfo(d), removable: true }});
-
-          kakao.maps.event.addListener(marker, 'click', () => {{
-            for(const [eid, obj] of store.entries()){{
-              if(obj.iw && eid !== d.id) obj.iw.close();
-            }}
-            iw.open(map, marker);
-            openEventId = d.id;
-          }});
-
-          store.set(d.id, {{ marker, iw, data: d }});
-        }} else {{
-          const obj = store.get(d.id);
-          obj.data = d;
-          obj.marker.setPosition(pos);
-          obj.iw.setContent(renderInfo(d)); // ✅ 닫지 않고 버튼만 갱신
-        }}
-      }}
-
-      function removeMissing(newIds){{
-        for(const [eid, obj] of store.entries()){{
-          if(!newIds.has(eid)){{
-            try{{ obj.iw.close(); }}catch(e){{}}
-            try{{ obj.marker.setMap(null); }}catch(e){{}}
-            store.delete(eid);
-            if(openEventId === eid) openEventId = null;
-          }}
-        }}
-      }}
-
-      async function loadData(){{
-        try{{
-          const r = await fetch("/api/events_json", {{credentials:"include"}});
-          const data = await r.json();
-          if(!r.ok || !data.ok) return;
-
-          const events = data.events || [];
-          const ids = new Set(events.map(x => x.id));
-
-          events.forEach(upsertEvent);
-          removeMissing(ids);
-
-          if(openEventId && store.has(openEventId)){{
-            const obj = store.get(openEventId);
-            obj.iw.open(map, obj.marker);
-          }}
-        }}catch(e){{}}
-      }}
-
-      document.addEventListener("click", async (ev) => {{
-        const btn = ev.target.closest("button[data-oseyo-action][data-eid]");
-        if(!btn) return;
-
-        const action = btn.getAttribute("data-oseyo-action");
-        const eid = btn.getAttribute("data-eid");
-        btn.disabled = true;
-
-        try{{
-          const r = await fetch(action === "join" ? "/api/join" : "/api/leave", {{
-            method:"POST",
-            headers: {{"Content-Type":"application/json"}},
-            credentials:"include",
-            body: JSON.stringify({{event_id:eid}})
-          }});
-          const data = await r.json();
-          if(!r.ok || !data.ok){{
-            alert((data && data.message) ? data.message : "요청 실패");
-          }} else {{
-            await loadData();
-            try{{ parent.postMessage({{type:"oseyo_changed"}}, "*"); }}catch(e){{}}
-          }}
-        }}catch(e){{
-          alert("네트워크 오류");
-        }}finally{{
-          btn.disabled = false;
-        }}
-      }});
-
-      window.addEventListener("message", (ev) => {{
-        if(ev && ev.data && ev.data.type === "oseyo_refresh"){{
-          loadData();
-        }}
-      }});
-
-      loadData();
-      setInterval(loadData, 2000);
-    </script>
+  <div id="m" style="width:100%;height:100vh;"></div>
+  <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey=__KAKAO_JS_KEY__"></script>
+  <script>
+    // 여긴 JS 중괄호 마음껏 써도 됨
+  </script>
 </body>
 </html>
-    """)
+"""
+    html_page = html_page.replace("__KAKAO_JS_KEY__", KAKAO_JAVASCRIPT_KEY)
+    return HTMLResponse(html_page)
 
 
 # =========================================================
@@ -1945,3 +1798,4 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
