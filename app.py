@@ -405,7 +405,7 @@ def list_events(user_id: str | None):
 
 
 # =========================================================
-# 5) CSS (데스크톱 탐색탭 카드 이미지 줄이기 포함)
+# 5) CSS (참여중인 활동 섹션 + 데스크톱 이미지 축소 포함)
 # =========================================================
 CSS = """
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -580,6 +580,31 @@ button.selected {
   cursor: not-allowed;
 }
 
+/* ✅ 참여중인 활동 섹션 */
+.joined-wrap{
+  padding: 14px 24px 6px 24px;
+}
+.joined-title{
+  font-size: 14px;
+  font-weight: 900;
+  color: #111;
+  margin: 6px 0 10px 0;
+}
+.joined-box{
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 18px;
+  padding: 14px;
+}
+.joined-box .event-card{
+  margin-bottom: 0;
+}
+.joined-hint{
+  font-size: 12px;
+  color: #777;
+  margin-top: 8px;
+}
+
 .fav-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .fav-grid button {
   font-size: 13px !important;
@@ -590,6 +615,9 @@ button.selected {
   text-align: left !important;
 }
 .small-muted { color:#777; font-size:12px; margin-top:-6px; }
+
+.event-actions { position: relative; z-index: 5; }
+.event-photo { position: relative; z-index: 1; }
 
 /* ✅ 데스크톱에서는 탐색탭 카드 이미지를 줄이고 가로 레이아웃으로 */
 @media (min-width: 900px) {
@@ -745,61 +773,123 @@ def add_fav_only(name: str, request: gr.Request):
 
 
 # =========================================================
-# 7) 탐색탭 HTML 렌더 (참여/빠지기 + 남은시간 + 인원/정원)
+# 7) 탐색/참여중 HTML 렌더
 # =========================================================
-def render_explore_cards(user_id: str | None):
-    events = list_events(user_id)
+def render_event_card(e: dict, force_joined: bool | None = None) -> str:
+    title = html.escape(e.get("title") or "")
+    addr = html.escape(e.get("addr") or "장소 미정")
 
-    if not events:
-        return "<div style='text-align:center; padding:100px 20px; color:#999;'>등록된 이벤트가 없습니다.<br>오른쪽 아래 버튼을 눌러 시작해보세요.</div>"
+    # 시작 표시
+    start_raw = e.get("start") or ""
+    try:
+        sdt = datetime.strptime(start_raw, DT_FMT)
+        start_str = sdt.strftime("%m월 %d일 %H:%M")
+    except Exception:
+        start_str = start_raw
 
-    out = ""
-    for e in events:
-        title = html.escape(e["title"])
-        addr = html.escape(e["addr"] or "장소 미정")
+    left = e.get("time_left") or ""
+    left_str = f" · {html.escape(left)}" if left else ""
 
-        # 시작 표시
-        try:
-            sdt = datetime.strptime(e["start"], DT_FMT)
-            start_str = sdt.strftime("%m월 %d일 %H:%M")
-        except Exception:
-            start_str = e["start"] or ""
+    # 이미지
+    photo = e.get("photo") or ""
+    if photo:
+        img_html = f"<img class='event-photo' src='data:image/jpeg;base64,{photo}' />"
+    else:
+        img_html = "<div class='event-photo' style='display:flex;align-items:center;justify-content:center;color:#ccc;'>NO IMAGE</div>"
 
-        left = e["time_left"]
-        left_str = f" · {html.escape(left)}" if left else ""
+    participants = int(e.get("participants") or 0)
+    capacity = int(e.get("capacity") or 10)
 
-        # 이미지
-        if e["photo"]:
-            img_html = f"<img class='event-photo' src='data:image/jpeg;base64,{e['photo']}' />"
-        else:
-            img_html = "<div class='event-photo' style='display:flex;align-items:center;justify-content:center;color:#ccc;'>NO IMAGE</div>"
+    joined = bool(e.get("joined"))
+    if force_joined is not None:
+        joined = bool(force_joined)
 
-        # 참여 버튼 상태
-        joined = bool(e["joined"])
-        full = (e["participants"] >= e["capacity"])
+    full = participants >= capacity
 
-        if joined:
-            btn = f"<button class='oseyo-btn secondary' data-oseyo-action='leave' data-eid='{e['id']}'>빠지기</button>"
-        else:
-            dis = "disabled" if full else ""
-            btn = f"<button class='oseyo-btn' data-oseyo-action='join' data-eid='{e['id']}' {dis}>참여하기</button>"
+    if joined:
+        btn = f"<button class='oseyo-btn secondary' data-oseyo-action='leave' data-eid='{e.get('id','')}'>빠지기</button>"
+    else:
+        dis = "disabled" if full else ""
+        btn = f"<button class='oseyo-btn' data-oseyo-action='join' data-eid='{e.get('id','')}' {dis}>참여하기</button>"
 
-        out += f"""
-        <div class='event-card'>
-          {img_html}
-          <div class='event-info'>
-            <div class='event-title'>{title}</div>
-            <div class='event-meta'>⏰ {html.escape(start_str)}{left_str}</div>
-            <div class='event-meta'>📍 {addr}</div>
-            <div class='event-actions'>
-              <div class='pill'>👥 {e['participants']} / {e['capacity']}</div>
-              {btn}
-            </div>
+    return f"""
+      <div class='event-card'>
+        {img_html}
+        <div class='event-info'>
+          <div class='event-title'>{title}</div>
+          <div class='event-meta'>⏰ {html.escape(start_str)}{left_str}</div>
+          <div class='event-meta'>📍 {addr}</div>
+          <div class='event-actions'>
+            <div class='pill'>👥 {participants} / {capacity}</div>
+            {btn}
           </div>
         </div>
-        """
+      </div>
+    """
 
+def render_explore_cards(user_id: str | None):
+    events = list_events(user_id)
+    if not events:
+        return "<div style='text-align:center; padding:100px 20px; color:#999;'>등록된 이벤트가 없습니다.<br>오른쪽 아래 버튼을 눌러 시작해보세요.</div>"
+    out = ""
+    for e in events:
+        out += render_event_card(e)
     return out
+
+def render_joined_block(user_id: str | None) -> str:
+    if not user_id:
+        return ""  # 로그인 전에는 숨김
+    joined_id = get_joined_event_id(user_id)
+    if not joined_id:
+        return ""
+
+    with db_conn() as con:
+        row = con.execute(
+            """
+            SELECT id, title, photo, start, end, addr, lat, lng, capacity
+            FROM events
+            WHERE id=?
+            """,
+            (joined_id,),
+        ).fetchone()
+        if not row:
+            return ""
+
+        cnt = con.execute(
+            "SELECT COUNT(*) FROM event_participants WHERE event_id=?",
+            (joined_id,),
+        ).fetchone()
+
+    participants = int(cnt[0] or 0)
+    eid, title, photo, start, end, addr, lat, lng, cap = row
+    cap = int(cap or 10)
+
+    e = {
+        "id": eid,
+        "title": title or "",
+        "photo": photo or "",
+        "start": start or "",
+        "end": end or "",
+        "addr": addr or "",
+        "lat": float(lat or 0),
+        "lng": float(lng or 0),
+        "capacity": cap,
+        "participants": participants,
+        "joined": True,
+        "time_left": time_left_text(end or ""),
+    }
+
+    card = render_event_card(e, force_joined=True)
+
+    return f"""
+    <div class="joined-wrap">
+      <div class="joined-title">참여중인 활동</div>
+      <div class="joined-box">
+        {card}
+        <div class="joined-hint">여기서 바로 빠지기를 눌러 참여를 해제할 수 있습니다.</div>
+      </div>
+    </div>
+    """
 
 
 # =========================================================
@@ -812,7 +902,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     search_state = gr.State([])
     selected_addr = gr.State({})
 
-    # ✅ 전역 JS: 탐색탭 즉시 갱신 + 지도 iframe 갱신(새로고침 없이)
+    # ✅ 전역 JS: 탐색/지도 상단 '참여중인 활동' + 목록 동기화 + 지도 iframe 갱신
     gr.HTML("""
 <script>
 (function(){
@@ -852,6 +942,24 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     }catch(e){}
   }
 
+  async function refreshJoined(){
+    try{
+      const r = await fetch("/api/joined_html", {credentials:"include"});
+      const data = await r.json();
+      const h = (data && typeof data.html === "string") ? data.html : "";
+
+      const a = document.getElementById("oseyo_joined_explore_root");
+      const b = document.getElementById("oseyo_joined_map_root");
+      if(a) a.innerHTML = h;
+      if(b) b.innerHTML = h;
+    }catch(e){}
+  }
+
+  async function refreshAll(){
+    await refreshJoined();
+    await refreshExplore();
+  }
+
   function notifyMapRefresh(){
     const iframe = document.getElementById("map_iframe");
     if(!iframe) return;
@@ -860,21 +968,115 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     }catch(e){}
   }
 
-  // iframe -> parent 메시지 처리(지도에서 참여/빠지기 했을 때 탐색탭 즉시 반영)
+  // iframe -> parent 메시지 처리(지도에서 참여/빠지기 했을 때 탐색/상단 즉시 반영)
   window.addEventListener("message", (ev) => {
     if(!ev || !ev.data) return;
     if(ev.data.type === "oseyo_changed"){
-      refreshExplore();
+      refreshAll();
     }
   });
 
-  // 탐색탭 클릭 델리게이션(참여/빠지기)
-  document.addEventListener("click", async (ev) => {
-    const btn = ev.target.closest("button[data-oseyo-action][data-eid]");
+  // 탐색탭/상단 카드 클릭 델리게이션(참여/빠지기)
+  <script>
+(function(){
+  function toast(msg){
+    let t = document.getElementById("oseyo_toast");
+    if(!t){
+      t = document.createElement("div");
+      t.id="oseyo_toast";
+      t.style.position="fixed";
+      t.style.left="50%";
+      t.style.bottom="24px";
+      t.style.transform="translateX(-50%)";
+      t.style.background="rgba(17,17,17,0.92)";
+      t.style.color="#fff";
+      t.style.padding="10px 14px";
+      t.style.borderRadius="12px";
+      t.style.fontSize="13px";
+      t.style.zIndex="999999";
+      t.style.maxWidth="92vw";
+      t.style.display="none";
+      document.body.appendChild(t);
+    }
+    t.textContent = msg || "";
+    t.style.display="block";
+    clearTimeout(window.__oseyo_toast_timer);
+    window.__oseyo_toast_timer = setTimeout(()=>{ t.style.display="none"; }, 1800);
+  }
+
+  async function refreshExplore(){
+    try{
+      const r = await fetch("/api/events_html", {credentials:"include"});
+      const data = await r.json();
+      const root = document.getElementById("oseyo_explore_root");
+      if(root && data && typeof data.html === "string"){
+        root.innerHTML = data.html;
+      }
+    }catch(e){}
+  }
+
+  async function refreshJoined(){
+    try{
+      const r = await fetch("/api/joined_html", {credentials:"include"});
+      const data = await r.json();
+      const h = (data && typeof data.html === "string") ? data.html : "";
+
+      const a = document.getElementById("oseyo_joined_explore_root");
+      const b = document.getElementById("oseyo_joined_map_root");
+      if(a) a.innerHTML = h;
+      if(b) b.innerHTML = h;
+    }catch(e){}
+  }
+
+  async function refreshAll(){
+    await refreshJoined();
+    await refreshExplore();
+  }
+
+  function notifyMapRefresh(){
+    const iframe = document.getElementById("map_iframe");
+    if(!iframe) return;
+    try{
+      iframe.contentWindow.postMessage({type:"oseyo_refresh"}, "*");
+    }catch(e){}
+  }
+
+  // ✅ Shadow DOM에서도 버튼을 잡기 위한 helper
+  function findOseyoButton(ev){
+    const path = (ev && typeof ev.composedPath === "function") ? ev.composedPath() : null;
+    if(path && path.length){
+      for(const el of path){
+        if(el && el.tagName === "BUTTON" && el.dataset && el.dataset.oseyoAction && el.dataset.eid){
+          return el;
+        }
+      }
+    }
+    // fallback
+    const t = ev.target;
+    if(t && t.closest){
+      return t.closest("button[data-oseyo-action][data-eid]");
+    }
+    return null;
+  }
+
+  // iframe -> parent 메시지 처리
+  window.addEventListener("message", (ev) => {
+    if(!ev || !ev.data) return;
+    if(ev.data.type === "oseyo_changed"){
+      refreshAll();
+    }
+  });
+
+  // ✅ click 대신 pointerup + capture + composedPath 사용
+  window.addEventListener("pointerup", async (ev) => {
+    const btn = findOseyoButton(ev);
     if(!btn) return;
 
-    const action = btn.getAttribute("data-oseyo-action");
-    const eid = btn.getAttribute("data-eid");
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    const action = btn.dataset.oseyoAction;
+    const eid = btn.dataset.eid;
     if(!action || !eid) return;
 
     btn.disabled = true;
@@ -887,27 +1089,36 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
         body: JSON.stringify({event_id: eid})
       });
       const data = await r.json();
+
       if(!r.ok || !data.ok){
         toast((data && data.message) ? data.message : "요청 실패");
       }else{
-        // ✅ 두 탭 모두 즉시 반영
-        await refreshExplore();
-        notifyMapRefresh();
+        await refreshAll();      // ✅ 탐색/상단 즉시 갱신
+        notifyMapRefresh();      // ✅ 지도도 즉시 갱신
       }
     }catch(e){
       toast("네트워크 오류");
     }finally{
       btn.disabled = false;
     }
-  });
+  }, true); // ✅ capture=true
 
-  // 최초 1회 로드 시 탐색 목록 채우기
   window.addEventListener("load", () => {
-    refreshExplore();
+    refreshAll();
   });
 
-  // 외부에서 호출 가능하게 노출(필요시)
-  window.oseyoRefreshExplore = refreshExplore;
+  window.oseyoRefreshAll = refreshAll;
+  window.oseyoNotifyMapRefresh = notifyMapRefresh;
+})();
+</script>
+
+  // 최초 1회 로드
+  window.addEventListener("load", () => {
+    refreshAll();
+  });
+
+  // 외부에서 호출용
+  window.oseyoRefreshAll = refreshAll;
   window.oseyoNotifyMapRefresh = notifyMapRefresh;
 })();
 </script>
@@ -922,11 +1133,17 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     with gr.Tabs(elem_classes=["tabs"]):
         with gr.Tab("탐색"):
-            # ✅ 여기엔 “컨테이너만” 둔다. 실제 카드 내용은 /api/events_html로 JS가 채운다.
-            explore_html = gr.HTML("<div id='oseyo_explore_root'></div>")
+            explore_html = gr.HTML("""
+              <div id="oseyo_joined_explore_root"></div>
+              <div id="oseyo_explore_root"></div>
+            """)
             refresh_btn = gr.Button("🔄 목록 새로고침", variant="secondary", size="sm")
+
         with gr.Tab("지도"):
-            gr.HTML('<iframe id="map_iframe" src="/map" style="width:100%;height:70vh;border:none;border-radius:16px;"></iframe>')
+            gr.HTML("""
+              <div id="oseyo_joined_map_root"></div>
+              <iframe id="map_iframe" src="/map" style="width:100%;height:70vh;border:none;border-radius:16px;"></iframe>
+            """)
 
     with gr.Row(elem_classes=["fab-wrapper"]):
         fab = gr.Button("+")
@@ -984,13 +1201,18 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             s_close = gr.Button("취소", elem_classes=["btn-secondary"])
             s_final = gr.Button("확정", elem_classes=["btn-primary"])
 
-    # refresh 버튼은 Gradio 방식 유지(기존 기능 수정하지 않기 위함)
-    def refresh_explore_py(request: gr.Request):
+    # refresh 버튼도 참여중/목록 둘 다 갱신되도록(파이썬 방식)
+    def refresh_all_py(request: gr.Request):
         user = get_current_user(request)
-        inner = render_explore_cards(user["id"] if user else None)
-        return f"<div id='oseyo_explore_root'>{inner}</div>"
+        uid = user["id"] if user else None
+        joined = render_joined_block(uid)
+        explore = render_explore_cards(uid)
+        return f"""
+          <div id="oseyo_joined_explore_root">{joined}</div>
+          <div id="oseyo_explore_root">{explore}</div>
+        """
 
-    refresh_btn.click(fn=refresh_explore_py, inputs=None, outputs=explore_html)
+    refresh_btn.click(fn=refresh_all_py, inputs=None, outputs=explore_html)
 
     def open_main_modal(request: gr.Request):
         my_events = get_my_events(request)
@@ -1062,11 +1284,16 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     def save_and_close(title, img, start, end, addr, req: gr.Request):
         _ = save_data(title, img, start, end, addr, req)
-        # 탐색탭은 JS가 /api/events_html로도 갱신하지만, 일단 여기서도 즉시 반영
+        # 파이썬 렌더도 참여중 + 목록 갱신
         user = get_current_user(req)
-        inner = render_explore_cards(user["id"] if user else None)
+        uid = user["id"] if user else None
+        joined = render_joined_block(uid)
+        explore = render_explore_cards(uid)
         favs = get_top_favs(10)
-        return f"<div id='oseyo_explore_root'>{inner}</div>", gr.update(visible=False), gr.update(visible=False), *fav_buttons_update(favs)
+        return f"""
+          <div id="oseyo_joined_explore_root">{joined}</div>
+          <div id="oseyo_explore_root">{explore}</div>
+        """, gr.update(visible=False), gr.update(visible=False), *fav_buttons_update(favs)
 
     m_save.click(
         save_and_close,
@@ -1078,7 +1305,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
         delete_my_event,
         [my_event_list],
         [del_msg, my_event_list],
-    ).then(refresh_explore_py, None, explore_html)
+    ).then(refresh_all_py, None, explore_html)
 
 
 # =========================================================
@@ -1089,7 +1316,8 @@ app = FastAPI()
 PUBLIC_PATHS = {
     "/", "/login", "/signup", "/logout", "/health", "/map",
     "/send_email_otp",
-    "/api/events_html", "/api/events_json", "/api/join", "/api/leave"
+    "/api/events_html", "/api/events_json", "/api/joined_html",
+    "/api/join", "/api/leave"
 }
 
 @app.middleware("http")
@@ -1394,7 +1622,7 @@ def logout():
 
 
 # -------------------------
-# ✅ API: 탐색 HTML / 지도 JSON
+# ✅ API: 탐색 HTML / 지도 JSON / 참여중 HTML
 # -------------------------
 def _user_from_cookie(req: Request):
     token = req.cookies.get(COOKIE_NAME)
@@ -1411,6 +1639,12 @@ def api_events_json(req: Request):
     user = _user_from_cookie(req)
     events = list_events(user["id"] if user else None)
     return JSONResponse({"ok": True, "events": events})
+
+@app.get("/api/joined_html")
+def api_joined_html(req: Request):
+    user = _user_from_cookie(req)
+    h = render_joined_block(user["id"] if user else None)
+    return JSONResponse({"ok": True, "html": h})
 
 
 # -------------------------
@@ -1444,7 +1678,7 @@ async def api_join(req: Request):
         if row and row[0] != eid:
             return JSONResponse({"ok": False, "message": "이미 다른 이벤트에 참여 중입니다. 먼저 빠지기를 해주세요."}, status_code=409)
 
-        # 정원 체크(이미 참여 중이면 그대로 OK)
+        # 이미 참여 중이면 OK
         already = con.execute(
             "SELECT 1 FROM event_participants WHERE event_id=? AND user_id=?",
             (eid, user["id"]),
@@ -1452,6 +1686,7 @@ async def api_join(req: Request):
         if already:
             return JSONResponse({"ok": True})
 
+        # 정원 체크
         cur = con.execute(
             "SELECT COUNT(*) FROM event_participants WHERE event_id=?",
             (eid,),
@@ -1520,140 +1755,161 @@ def map_h():
   <div id="m" style="width:100%;height:100vh;"></div>
   <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JAVASCRIPT_KEY}"></script>
   <script>
-    function esc(s) {{
-      return String(s||"")
-        .replaceAll("&","&amp;")
-        .replaceAll("<","&lt;")
-        .replaceAll(">","&gt;")
-        .replaceAll('"',"&quot;")
-        .replaceAll("'","&#039;");
-    }}
+  function esc(s) {
+    return String(s||"")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
 
-    const map = new kakao.maps.Map(document.getElementById('m'), {{
-      center: new kakao.maps.LatLng(36.019, 129.343),
-      level: 7
-    }});
+  const map = new kakao.maps.Map(document.getElementById('m'), {
+    center: new kakao.maps.LatLng(36.019, 129.343),
+    level: 7
+  });
 
-    let markers = [];
-    let openIw = null;
+  // ✅ event_id -> { marker, iw, data }
+  const store = new Map();
+  let openEventId = null;
 
-    function clearMarkers(){{
-      markers.forEach(m => m.setMap(null));
-      markers = [];
-      if(openIw) openIw.close();
-      openIw = null;
-    }}
+  function renderInfo(d){
+    const title = esc(d.title);
+    const addr = esc(d.addr);
+    const start = esc(d.start);
+    const left = d.time_left ? (" · " + esc(d.time_left)) : "";
+    const img = d.photo ? `<img class="iw-img" src="data:image/jpeg;base64,${d.photo}">` : "";
+    const full = (d.participants >= d.capacity);
+    const joined = !!d.joined;
 
-    function renderInfo(d){{
-      const title = esc(d.title);
-      const addr = esc(d.addr);
-      const start = esc(d.start);
-      const left = d.time_left ? (" · " + esc(d.time_left)) : "";
-      const img = d.photo ? `<img class="iw-img" src="data:image/jpeg;base64,${{d.photo}}">` : "";
-      const full = (d.participants >= d.capacity);
-      const joined = !!d.joined;
+    const btnLabel = joined ? "빠지기" : "참여하기";
+    const btnCls = joined ? "btn secondary" : "btn primary";
+    const dis = (!joined && full) ? "disabled" : "";
 
-      const btnLabel = joined ? "빠지기" : "참여하기";
-      const btnCls = joined ? "btn secondary" : "btn primary";
-      const dis = (!joined && full) ? "disabled" : "";
-
-      return `
-        <div style="padding:10px;width:240px;">
-          <div class="iw-title">${{title}}</div>
-          <div class="iw-meta">⏰ ${{start}}${{left}}</div>
-          <div class="iw-meta">📍 ${{addr}}</div>
-          ${{img}}
-          <div class="iw-row">
-            <div class="pill">👥 ${{d.participants}} / ${{d.capacity}}</div>
-            <button class="${{btnCls}}" data-oseyo-action="${{joined ? "leave" : "join"}}" data-eid="${{d.id}}" ${{dis}}>${{btnLabel}}</button>
-          </div>
+    return `
+      <div style="padding:10px;width:240px;">
+        <div class="iw-title">${title}</div>
+        <div class="iw-meta">⏰ ${start}${left}</div>
+        <div class="iw-meta">📍 ${addr}</div>
+        ${img}
+        <div class="iw-row">
+          <div class="pill">👥 ${d.participants} / ${d.capacity}</div>
+          <button class="${btnCls}" data-oseyo-action="${joined ? "leave" : "join"}" data-eid="${d.id}" ${dis}>${btnLabel}</button>
         </div>
-      `;
-    }}
+      </div>
+    `;
+  }
 
-    async function loadData(){{
-      try {{
-        const r = await fetch("/api/events_json", {{credentials:"include"}});
-        const data = await r.json();
-        if(!r.ok || !data.ok) return;
+  function upsertEvent(d){
+    if(!d.lat || !d.lng) return;
 
-        clearMarkers();
+    const pos = new kakao.maps.LatLng(d.lat, d.lng);
 
-        (data.events||[]).forEach(d => {{
-          if(!d.lat || !d.lng) return;
+    if(!store.has(d.id)){
+      const marker = new kakao.maps.Marker({ position: pos, map: map });
+      const iw = new kakao.maps.InfoWindow({ content: renderInfo(d), removable: true });
 
-          const marker = new kakao.maps.Marker({{
-            position: new kakao.maps.LatLng(d.lat, d.lng),
-            map: map
-          }});
-          markers.push(marker);
+      kakao.maps.event.addListener(marker, 'click', () => {
+        // ✅ 열려 있던 것이 있으면 닫되, "닫는 것"은 marker 클릭에만 반응
+        // (참여/빠지기에서는 안 닫음)
+        for(const [eid, obj] of store.entries()){
+          if(obj.iw && eid !== d.id) obj.iw.close();
+        }
+        iw.open(map, marker);
+        openEventId = d.id;
+      });
 
-          const iw = new kakao.maps.InfoWindow({{
-            content: renderInfo(d),
-            removable: true
-          }});
+      store.set(d.id, { marker, iw, data: d });
+    }else{
+      const obj = store.get(d.id);
+      obj.data = d;
+      obj.marker.setPosition(pos);
+      obj.iw.setContent(renderInfo(d)); // ✅ 열린 상태면 닫히지 않고 버튼만 갱신됨
+    }
+  }
 
-          kakao.maps.event.addListener(marker, 'click', () => {{
-            if (openIw) openIw.close();
-            iw.open(map, marker);
-            openIw = iw;
-          }});
-        }});
-      }} catch(e) {{}}
-    }}
+  function removeMissing(newIds){
+    for(const [eid, obj] of store.entries()){
+      if(!newIds.has(eid)){
+        try{ obj.iw.close(); }catch(e){}
+        try{ obj.marker.setMap(null); }catch(e){}
+        store.delete(eid);
+        if(openEventId === eid) openEventId = null;
+      }
+    }
+  }
 
-    // ✅ 지도 내 참여/빠지기
-    document.addEventListener("click", async (ev) => {{
-      const btn = ev.target.closest("button[data-oseyo-action][data-eid]");
-      if(!btn) return;
+  async function loadData(){
+    try{
+      const r = await fetch("/api/events_json", {credentials:"include"});
+      const data = await r.json();
+      if(!r.ok || !data.ok) return;
 
-      const action = btn.getAttribute("data-oseyo-action");
-      const eid = btn.getAttribute("data-eid");
-      btn.disabled = true;
+      const events = data.events || [];
+      const ids = new Set(events.map(x => x.id));
 
-      try {{
-        const r = await fetch(action === "join" ? "/api/join" : "/api/leave", {{
-          method:"POST",
-          headers: {{"Content-Type":"application/json"}},
-          credentials:"include",
-          body: JSON.stringify({{event_id:eid}})
-        }});
-        const data = await r.json();
-        if(!r.ok || !data.ok){{
-          // 에러는 alert로 최소 처리
-          alert((data && data.message) ? data.message : "요청 실패");
-        }} else {{
-          // 지도 즉시 반영
-          await loadData();
-          // 부모(탐색탭)도 즉시 갱신하도록 알림
-          try {{
-            parent.postMessage({{type:"oseyo_changed"}}, "*");
-          }} catch(e) {{}}
-        }}
-      }} catch(e) {{
-        alert("네트워크 오류");
-      }} finally {{
-        btn.disabled = false;
-      }}
-    }});
+      // ✅ 업데이트/추가
+      events.forEach(upsertEvent);
 
-    // ✅ 부모에서 “새로고침 없이 갱신” 명령 받으면 데이터 재로딩
-    window.addEventListener("message", (ev) => {{
-      if(!ev || !ev.data) return;
-      if(ev.data.type === "oseyo_refresh") {{
-        loadData();
-      }}
-    }});
+      // ✅ 삭제 반영
+      removeMissing(ids);
 
-    // ✅ 주기적 폴링(새 이벤트 생성도 자동 반영)
-    loadData();
-    setInterval(loadData, 4000);
-  </script>
-</body>
-</html>
-    """)
+      // ✅ 열린 인포윈도우 유지 (content는 이미 setContent로 갱신됨)
+      if(openEventId && store.has(openEventId)){
+        const obj = store.get(openEventId);
+        // 열려있는지 확실히 유지 (가끔 브라우저가 닫는 경우 대비)
+        obj.iw.open(map, obj.marker);
+      }
 
+    }catch(e){}
+  }
 
+  // ✅ 지도 내 참여/빠지기: 인포윈도우 닫지 않고 content만 업데이트
+  document.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-oseyo-action][data-eid]");
+    if(!btn) return;
+
+    const action = btn.getAttribute("data-oseyo-action");
+    const eid = btn.getAttribute("data-eid");
+    btn.disabled = true;
+
+    try{
+      const r = await fetch(action === "join" ? "/api/join" : "/api/leave", {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        credentials:"include",
+        body: JSON.stringify({event_id:eid})
+      });
+      const data = await r.json();
+
+      if(!r.ok || !data.ok){
+        alert((data && data.message) ? data.message : "요청 실패");
+      }else{
+        // ✅ 닫지 말고, 데이터만 새로 로드해서 setContent 갱신
+        await loadData();
+
+        // ✅ 부모 탭(탐색/상단) 즉시 갱신 트리거
+        try{ parent.postMessage({type:"oseyo_changed"}, "*"); }catch(e){}
+      }
+    }catch(e){
+      alert("네트워크 오류");
+    }finally{
+      btn.disabled = false;
+    }
+  });
+
+  // ✅ 부모에서 갱신 신호 받으면 로드
+  window.addEventListener("message", (ev) => {
+    if(ev && ev.data && ev.data.type === "oseyo_refresh"){
+      loadData();
+    }
+  });
+
+  // 최초 + 폴링
+  loadData();
+  setInterval(loadData, 4000);
+</script>
+      
 # =========================================================
 # 11) Gradio 마운트
 # =========================================================
