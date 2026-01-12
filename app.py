@@ -612,7 +612,7 @@ LOGIN_HTML = """<!doctype html>
 async def login_get(request: Request):
     err = request.query_params.get("err", "")
     error_block = f'<div class="err">{html.escape(err)}</div>' if err else ""
-    return HTMLResponse(LOGIN_HTML.format(error_block=error_block))
+    return HTMLResponse(LOGIN_HTML)
 
 @app.post("/login")
 async def login_post(email: str = Form(...), password: str = Form(...)):
@@ -1961,4 +1961,5 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
