@@ -37,6 +37,17 @@ SESSION_HOURS = 24 * 7  # 7일
 # =========================================================
 # 1) DB 경로 (기존 DB 최대한 유지)
 # =========================================================
+def render_safe(template: str, **kwargs) -> str:
+    """
+    template 안에 __KEY__ 형태의 토큰을 kwargs 값으로 치환한다.
+    .format()을 쓰지 않으므로 CSS { } 때문에 터지지 않는다.
+    """
+    out = template
+    for k, v in kwargs.items():
+        out = out.replace(f"__{k}__", str(v))
+    return out
+
+
 def pick_db_path():
     candidates_dirs = ["/var/data", "/tmp"]
     legacy_names = [
@@ -597,7 +608,9 @@ LOGIN_HTML = """<!doctype html>
         <input name="password" type="password" required placeholder="비밀번호" />
         <button class="btn" type="submit">로그인</button>
       </form>
+
       __ERROR_BLOCK__
+
       <div class="link">계정이 없으신가요? <a href="/signup">회원가입</a></div>
     </div>
   </div>
@@ -605,12 +618,12 @@ LOGIN_HTML = """<!doctype html>
 </html>
 """
 
+
 @app.get("/login")
 async def login_get(request: Request):
     err = request.query_params.get("err", "")
     error_block = f'<div class="err">{html.escape(err)}</div>' if err else ""
-    page = render_html(LOGIN_HTML, {"__ERROR_BLOCK__": error_block})
-    return HTMLResponse(page)
+    return HTMLResponse(render_safe(LOGIN_HTML, ERROR_BLOCK=error_block))
 
 @app.post("/login")
 async def login_post(email: str = Form(...), password: str = Form(...)):
@@ -872,21 +885,22 @@ async def signup_get(request: Request):
     err = request.query_params.get("err", "")
     ok = request.query_params.get("ok", "")
 
-    error_block = f'<div class="err">{html.escape(err)}</div>' if err else ""
-    otp_class = "muted"
-    otp_msg = ""
-
     if ok:
-        # ok 메시지를 otp 영역에도 보여주고 싶으면 여기 유지
+        error_block = f'<div class="ok">{html.escape(ok)}</div>'
         otp_class = "ok"
         otp_msg = html.escape(ok)
+    else:
+        error_block = f'<div class="err">{html.escape(err)}</div>' if err else ""
+        otp_class = "muted"
+        otp_msg = ""
 
-    page = render_html(SIGNUP_HTML, {
-        "__ERROR_BLOCK__": error_block,
-        "__OTP_CLASS__": otp_class,
-        "__OTP_MSG__": otp_msg,
-    })
-    return HTMLResponse(page)
+    html_out = render_safe(
+        SIGNUP_HTML,
+        ERROR_BLOCK=error_block,
+        OTP_CLASS=otp_class,
+        OTP_MSG=otp_msg
+    )
+    return HTMLResponse(html_out)
 
 def _gen_otp() -> str:
     import random
@@ -1071,7 +1085,7 @@ async def map_page(request: Request):
     if not KAKAO_JAVASCRIPT_KEY:
         return HTMLResponse("<h3 style='font-family:sans-serif'>KAKAO_JAVASCRIPT_KEY가 설정되지 않았습니다.</h3>")
 
-    html_page = """<!doctype html>
+    MAP_HTML = """<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8" />
@@ -1227,8 +1241,7 @@ async def map_page(request: Request):
 </html>
 """
     html_page = html_page.replace("__APPKEY__", KAKAO_JAVASCRIPT_KEY)
-    return HTMLResponse(html_page)
-
+    return HTMLResponse(render_safe(html_page, APPKEY=KAKAO_JAVASCRIPT_KEY))
 
 # =========================================================
 # 8) Gradio UI (/app)  ※ 아래는 네가 준 그대로 유지
@@ -1949,3 +1962,4 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
