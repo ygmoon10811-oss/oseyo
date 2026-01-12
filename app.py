@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 import uvicorn
 from fastapi import Body
+from fastapi.responses import Response
 
 # =========================================================
 # 0) 시간/키
@@ -856,10 +857,34 @@ SIGNUP_HTML = """<!doctype html>
     </div>
   </div>
 
-<script>
+</body>
+</html>
+"""
+<script src="/static/signup.js"></script>
+
+SIGNUP_JS = r"""
+function onDomainChange() {
+  const sel = document.getElementById("email_domain_sel").value;
+  document.getElementById("custom_domain_wrap").style.display = (sel === "_custom") ? "block" : "none";
+}
+
+function buildEmail() {
+  const id = (document.getElementById("email_id").value || "").trim();
+  const sel = document.getElementById("email_domain_sel").value;
+  let domain = sel;
+  if (sel === "_custom") {
+    domain = (document.getElementById("email_domain_custom").value || "").trim();
+  }
+  const email = (id && domain) ? (id + "@" + domain) : "";
+  const hidden = document.getElementById("email_full");
+  if (hidden) hidden.value = email;
+  return email;
+}
+
 async function sendOtp() {
   const email = buildEmail();
   const box = document.getElementById("otp_status");
+  if (!box) { alert("otp_status 요소가 없습니다."); return; }
 
   if (!email || email.indexOf("@") < 1) {
     box.className = "err";
@@ -874,23 +899,20 @@ async function sendOtp() {
     const res = await fetch("/send_email_otp", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({email}),
-      credentials: "include"
+      body: JSON.stringify({email: email})
     });
 
-    // ✅ JSON이 아닌 응답(HTML/텍스트/리다이렉트)도 안전하게 처리
+    const text = await res.text();
     let data = null;
-    const ct = (res.headers.get("content-type") || "").toLowerCase();
-    if (ct.includes("application/json")) {
-      data = await res.json();
-    } else {
-      const text = await res.text();
+    try { data = JSON.parse(text); } catch (e) {}
+
+    if (!res.ok) {
       box.className = "err";
-      box.textContent = "서버가 JSON이 아닌 응답을 반환했습니다.\n" + text.slice(0, 200);
+      box.textContent = (data && data.message) ? data.message : ("서버 오류(" + res.status + ")");
       return;
     }
 
-    if (!res.ok || !data.ok) {
+    if (!data || !data.ok) {
       box.className = "err";
       box.textContent = (data && data.message) ? data.message : "인증번호 발송 실패";
       return;
@@ -898,17 +920,38 @@ async function sendOtp() {
 
     box.className = "ok";
     box.textContent = "인증번호를 이메일로 발송했습니다.";
-
   } catch (e) {
     box.className = "err";
-    box.textContent = "요청 중 오류: " + (e?.message || "알 수 없음");
+    box.textContent = "네트워크 오류로 인증번호 발송에 실패했습니다.";
   }
 }
-</script>
 
-</body>
-</html>
+function toggleAllTerms(el) {
+  const checked = !!el.checked;
+  document.querySelectorAll(".terms input[type=checkbox]").forEach(cb => {
+    if (cb.id !== "t_all") cb.checked = checked;
+  });
+}
+
+function validateSignup() {
+  const email = buildEmail();
+  if (!email) {
+    alert("이메일을 입력해 주세요.");
+    return false;
+  }
+  const reqs = Array.from(document.querySelectorAll(".t_req"));
+  const ok = reqs.every(cb => cb.checked);
+  if (!ok) {
+    alert("필수 약관에 동의해 주세요.");
+    return false;
+  }
+  return true;
+}
 """
+
+@app.get("/static/signup.js")
+async def signup_js():
+    return Response(content=SIGNUP_JS, media_type="application/javascript; charset=utf-8")
 
 @app.get("/signup")
 async def signup_get(request: Request):
@@ -944,6 +987,8 @@ async def send_email_otp(request: Request):
         return JSONResponse({"ok": False, "message": "요청 JSON이 올바르지 않습니다."}, status_code=400)
 
     email = (payload.get("email") or "").strip().lower()
+    # 이하 너 기존 SMTP/OTP 저장/발송 코드 그대로
+
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
         return JSONResponse({"ok": False, "message": "이메일 형식이 올바르지 않습니다."})
     otp = _gen_otp()
@@ -2001,6 +2046,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
 
 
