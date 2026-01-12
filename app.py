@@ -600,7 +600,6 @@ LOGIN_HTML = """<!doctype html>
         <button class="btn" type="submit">로그인</button>
       </form>
       <div class="link">계정이 없으신가요? <a href="/signup">회원가입</a></div>
-      {error_block}
     </div>
   </div>
 </body>
@@ -1961,5 +1960,6 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
 
