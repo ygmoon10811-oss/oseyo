@@ -1121,7 +1121,7 @@ async def signup_post(
     gender: str = Form(""),
     birth: str = Form(""),
 ):
-    email = (email or "").strip().lower Show()
+    email = (email or "").strip().lower
     otp = (otp or "").strip()
 
     if password != password2:
@@ -2239,4 +2239,5 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
