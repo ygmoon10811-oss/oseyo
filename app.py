@@ -1057,21 +1057,18 @@ async def send_email_otp(request: Request):
         SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
         FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER).strip()
 
-        smtp_port_raw = (os.getenv("SMTP_PORT", "587") or "587").strip()
+        SMTP_PORT_RAW = (os.getenv("SMTP_PORT", "587") or "587").strip()
         try:
-            SMTP_PORT = int(smtp_port_raw)
+            SMTP_PORT = int(SMTP_PORT_RAW)
         except Exception:
-            return JSONResponse({"ok": False, "message": "SMTP_PORT가 숫자가 아닙니다. (예: 587)"}, status_code=200)
-
-        if not (SMTP_HOST and SMTP_USER and SMTP_PASS and FROM_EMAIL):
             return JSONResponse(
                 {
                     "ok": False,
-                    "message": "메일 발송을 위해 SMTP 환경변수(SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/FROM_EMAIL)를 설정해 주세요.",
+                    "message": f"SMTP_PORT가 숫자가 아닙니다. (현재 값: {SMTP_PORT_RAW})"
                 },
                 status_code=200,
             )
-
+        
         # OTP 저장
         with db_conn() as con:
             con.execute(
@@ -1121,29 +1118,34 @@ async def signup_post(
     gender: str = Form(""),
     birth: str = Form(""),
 ):
-    email = (email or "").strip().lower
+    email = (email or "").strip().lower()
     otp = (otp or "").strip()
 
     if password != password2:
         return RedirectResponse(
             url="/signup?err=" + requests.utils.quote("비밀번호 확인이 일치하지 않습니다."),
-            status_code=302,
+            status_code=302
         )
 
     with db_conn() as con:
-        row = con.execute("SELECT otp, expires_at FROM email_otps WHERE email=?", (email,)).fetchone()
+        row = con.execute(
+            "SELECT otp, expires_at FROM email_otps WHERE email=?",
+            (email,),
+        ).fetchone()
+
         if not row:
             return RedirectResponse(
                 url="/signup?err=" + requests.utils.quote("이메일 인증을 먼저 진행해 주세요."),
-                status_code=302,
+                status_code=302
             )
 
         db_otp, exp = row
+
         try:
             if datetime.fromisoformat(exp) < now_kst():
                 return RedirectResponse(
                     url="/signup?err=" + requests.utils.quote("인증번호가 만료되었습니다."),
-                    status_code=302,
+                    status_code=302
                 )
         except Exception:
             pass
@@ -1151,19 +1153,18 @@ async def signup_post(
         if otp != db_otp:
             return RedirectResponse(
                 url="/signup?err=" + requests.utils.quote("인증번호가 올바르지 않습니다."),
-                status_code=302,
+                status_code=302
             )
 
-        # ★ 여기 들여쓰기/존재 체크 버그 수정
-        try:
-            exists = con.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone()
-        except sqlite3.OperationalError:
-            exists = con.execute("SELECT 1 FROM users WHERE id=?", (email,)).fetchone()
-
+        # ✅ 여기로 나와 있어야 한다 (들여쓰기 중요)
+        exists = con.execute(
+            "SELECT 1 FROM users WHERE email=?",
+            (email,),
+        ).fetchone()
         if exists:
             return RedirectResponse(
                 url="/signup?err=" + requests.utils.quote("이미 가입된 이메일입니다."),
-                status_code=302,
+                status_code=302
             )
 
         uid = uuid.uuid4().hex
@@ -1174,11 +1175,13 @@ async def signup_post(
             "INSERT INTO users(id,email,pw_hash,name,gender,birth,created_at) VALUES(?,?,?,?,?,?,?)",
             (uid, email, ph, name.strip(), gender.strip(), birth.strip(), now_kst().isoformat()),
         )
+        # 1회용 OTP 정리
+        con.execute("DELETE FROM email_otps WHERE email=?", (email,))
         con.commit()
 
     return RedirectResponse(
         url="/login?err=" + requests.utils.quote("가입이 완료되었습니다. 로그인해 주세요."),
-        status_code=302,
+        status_code=302
     )
 
 
@@ -2239,5 +2242,6 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
 
