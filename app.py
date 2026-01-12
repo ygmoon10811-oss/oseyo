@@ -15,10 +15,8 @@ from PIL import Image
 
 import gradio as gr
 from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 import uvicorn
-from fastapi import Body
-from fastapi.responses import Response
 
 # =========================================================
 # 0) 시간/키
@@ -146,7 +144,6 @@ def init_db():
                 con.execute("ALTER TABLE users ADD COLUMN created_at TEXT;")
             except Exception:
                 pass
-
 
         # sessions
         con.execute(
@@ -577,6 +574,7 @@ PUBLIC_PATH_PREFIXES = (
     "/signup",
     "/send_email_otp",
     "/static",
+    "/logout",   # ✅ 로그아웃은 비로그인 상태에서도 쿠키 지우게 허용
 )
 
 @app.middleware("http")
@@ -602,13 +600,21 @@ async def auth_guard(request: Request, call_next):
 
 
 # -------------------------
-# 안전한 HTML 렌더 (format 금지)
+# Logout
 # -------------------------
-def render_html(template: str, mapping: dict) -> str:
-    out = template
-    for k, v in mapping.items():
-        out = out.replace(k, v)
-    return out
+@app.get("/logout")
+async def logout(request: Request):
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        try:
+            with db_conn() as con:
+                con.execute("DELETE FROM sessions WHERE token=?", (token,))
+                con.commit()
+        except Exception:
+            pass
+    resp = RedirectResponse(url="/login", status_code=302)
+    resp.delete_cookie(COOKIE_NAME, path="/")
+    return resp
 
 
 # -------------------------
@@ -657,7 +663,6 @@ LOGIN_HTML = """<!doctype html>
 </html>
 """
 
-
 @app.get("/login")
 async def login_get(request: Request):
     err = request.query_params.get("err", "")
@@ -705,7 +710,7 @@ async def login_post(email: str = Form(...), password: str = Form(...)):
 
 
 # -------------------------
-# Signup page (format 금지)
+# Signup page  ✅ script 태그를 HTML 문자열 "안으로" 넣음
 # -------------------------
 SIGNUP_HTML = """<!doctype html>
 <html lang="ko">
@@ -857,10 +862,10 @@ SIGNUP_HTML = """<!doctype html>
     </div>
   </div>
 
+<script src="/static/signup.js"></script>
 </body>
 </html>
 """
-<script src="/static/signup.js"></script>
 
 SIGNUP_JS = r"""
 function onDomainChange() {
@@ -987,10 +992,10 @@ async def send_email_otp(request: Request):
         return JSONResponse({"ok": False, "message": "요청 JSON이 올바르지 않습니다."}, status_code=400)
 
     email = (payload.get("email") or "").strip().lower()
-    # 이하 너 기존 SMTP/OTP 저장/발송 코드 그대로
 
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
-        return JSONResponse({"ok": False, "message": "이메일 형식이 올바르지 않습니다."})
+        return JSONResponse({"ok": False, "message": "이메일 형식이 올바르지 않습니다."}, status_code=400)
+
     otp = _gen_otp()
     expires = now_kst() + timedelta(minutes=10)
 
@@ -1001,7 +1006,7 @@ async def send_email_otp(request: Request):
     FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER).strip()
 
     if not (SMTP_HOST and SMTP_USER and SMTP_PASS and FROM_EMAIL):
-        return JSONResponse({"ok": False, "message": "메일 발송을 위해 SMTP 환경변수(SMTP_HOST/SMTP_USER/SMTP_PASS/FROM_EMAIL)를 설정해 주세요."})
+        return JSONResponse({"ok": False, "message": "메일 발송을 위해 SMTP 환경변수(SMTP_HOST/SMTP_USER/SMTP_PASS/FROM_EMAIL)를 설정해 주세요."}, status_code=400)
 
     with db_conn() as con:
         con.execute(
@@ -1025,7 +1030,7 @@ async def send_email_otp(request: Request):
             s.login(SMTP_USER, SMTP_PASS)
             s.send_message(msg)
     except Exception:
-        return JSONResponse({"ok": False, "message": "메일 발송에 실패했습니다. SMTP 설정/비밀번호(앱 비밀번호)/방화벽을 확인해 주세요."})
+        return JSONResponse({"ok": False, "message": "메일 발송에 실패했습니다. SMTP 설정/비밀번호(앱 비밀번호)/방화벽을 확인해 주세요."}, status_code=500)
 
     return JSONResponse({"ok": True})
 
@@ -1041,6 +1046,7 @@ async def signup_post(
 ):
     email = (email or "").strip().lower()
     otp = (otp or "").strip()
+
     if password != password2:
         return RedirectResponse(url="/signup?err=" + requests.utils.quote("비밀번호 확인이 일치하지 않습니다."), status_code=302)
 
@@ -1048,18 +1054,22 @@ async def signup_post(
         row = con.execute("SELECT otp, expires_at FROM email_otps WHERE email=?", (email,)).fetchone()
         if not row:
             return RedirectResponse(url="/signup?err=" + requests.utils.quote("이메일 인증을 먼저 진행해 주세요."), status_code=302)
+
         db_otp, exp = row
         try:
             if datetime.fromisoformat(exp) < now_kst():
                 return RedirectResponse(url="/signup?err=" + requests.utils.quote("인증번호가 만료되었습니다."), status_code=302)
         except Exception:
             pass
+
         if otp != db_otp:
             return RedirectResponse(url="/signup?err=" + requests.utils.quote("인증번호가 올바르지 않습니다."), status_code=302)
-            try:
-                exists = con.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone()
-            except sqlite3.OperationalError:
-                exists = con.execute("SELECT 1 FROM users WHERE id=?", (email,)).fetchone()
+
+        # ✅ exists 체크가 return 아래로 들어가 있던 버그 수정
+        try:
+            exists = con.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone()
+        except sqlite3.OperationalError:
+            exists = con.execute("SELECT 1 FROM users WHERE id=?", (email,)).fetchone()
 
         if exists:
             return RedirectResponse(url="/signup?err=" + requests.utils.quote("이미 가입된 이메일입니다."), status_code=302)
@@ -1067,10 +1077,18 @@ async def signup_post(
         uid = uuid.uuid4().hex
         salt = uuid.uuid4().hex[:12]
         ph = pw_hash(password, salt)
+
         con.execute(
             "INSERT INTO users(id,email,pw_hash,name,gender,birth,created_at) VALUES(?,?,?,?,?,?,?)",
             (uid, email, ph, name.strip(), gender.strip(), birth.strip(), now_kst().isoformat()),
         )
+
+        # 원하면 OTP는 소진 처리
+        try:
+            con.execute("DELETE FROM email_otps WHERE email=?", (email,))
+        except Exception:
+            pass
+
         con.commit()
 
     return RedirectResponse(url="/login?err=" + requests.utils.quote("가입이 완료되었습니다. 로그인해 주세요."), status_code=302)
@@ -1324,11 +1342,11 @@ async def map_page(request: Request):
 </body>
 </html>
 """
-    # ✅ format() 금지, 안전 치환만 사용
     return HTMLResponse(render_safe(MAP_HTML, APPKEY=KAKAO_JAVASCRIPT_KEY))
 
+
 # =========================================================
-# 8) Gradio UI (/app)  ※ 아래는 네가 준 그대로 유지
+# 8) Gradio UI (/app)  ※ 아래는 네 코드 그대로 유지
 # =========================================================
 CSS = r"""
 :root {
@@ -1402,7 +1420,6 @@ a { color: inherit; }
 .map-iframe iframe { width:100%; height: 70vh; min-height:520px; border:0; border-radius:18px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
 """
 
-
 def encode_img_to_b64(img_np) -> str:
     if img_np is None:
         return ""
@@ -1415,7 +1432,6 @@ def encode_img_to_b64(img_np) -> str:
     except Exception:
         return ""
 
-
 def decode_photo(photo_b64: str):
     try:
         if not photo_b64:
@@ -1425,7 +1441,6 @@ def decode_photo(photo_b64: str):
         return im
     except Exception:
         return None
-
 
 def card_md(e: dict):
     title = html.escape((e.get("title") or "").strip())
@@ -1437,7 +1452,6 @@ def card_md(e: dict):
     title_md = f"### {title}"
     meta_md = f"⏰ {start}{rem_txt}\n\n📍 {addr}\n\n👥 {cap}"
     return title_md, meta_md
-
 
 def get_joined_view(user_id: str):
     eid = get_joined_event_id(user_id)
@@ -1454,7 +1468,6 @@ def get_joined_view(user_id: str):
     addr = e.get("addr") or ""
     info = f"**{e.get('title','')}**\n\n⏰ {start} · **{rem}**\n\n📍 {addr}\n\n👥 {cnt}/{cap_label}"
     return True, (decode_photo(e.get("photo")) if e.get("photo") else None), info, eid
-
 
 PAGE_SIZE = 12
 MAX_CARDS = PAGE_SIZE
@@ -1569,10 +1582,6 @@ def page_next(page: int):
     except Exception:
         return 0
 
-
-# -------------------------
-# 이벤트 생성/내 글 관리
-# -------------------------
 def my_events_for_user(user_id: str):
     with db_conn() as con:
         rows = con.execute(
@@ -2043,11 +2052,5 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
 app = gr.mount_gradio_app(app, demo, path="/app")
 
-
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
-
-
-
-
-
