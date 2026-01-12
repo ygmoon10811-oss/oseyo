@@ -120,7 +120,7 @@ def init_db():
             """
         )
 
-        # events (기존 컬럼 호환: id,title,photo,start,end,addr,lat,lng,created_at,user_id)
+        # events
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS events (
@@ -138,14 +138,12 @@ def init_db():
             """
         )
 
-        # 기존 DB에 user_id가 없을 수 있어 보강
         if not _col_exists(con, "events", "user_id"):
             try:
                 con.execute("ALTER TABLE events ADD COLUMN user_id TEXT;")
             except Exception:
                 pass
 
-        # 정원/제한없음 컬럼 추가 (기존 DB 호환)
         if not _col_exists(con, "events", "capacity"):
             try:
                 con.execute("ALTER TABLE events ADD COLUMN capacity INTEGER;")
@@ -209,7 +207,7 @@ def create_session(user_id: str) -> str:
         con.commit()
     return token
 
-def get_user_id_from_request(req: Request) -> str | None:
+def get_user_id_from_request(req: Request):
     token = req.cookies.get(COOKIE_NAME)
     if not token:
         return None
@@ -245,13 +243,12 @@ _DT_FORMATS = [
     "%Y-%m-%dT%H:%M:%S",
 ]
 
-def parse_dt(s: str | None) -> datetime | None:
+def parse_dt(s):
     if not s:
         return None
     s = str(s).strip()
     if not s:
         return None
-    # ISO with timezone
     try:
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
@@ -267,13 +264,13 @@ def parse_dt(s: str | None) -> datetime | None:
             continue
     return None
 
-def is_active_event(end_s: str | None) -> bool:
+def is_active_event(end_s):
     end_dt = parse_dt(end_s)
     if end_dt is None:
         return True
     return end_dt >= now_kst()
 
-def remain_text(end_s: str | None) -> str:
+def remain_text(end_s):
     end_dt = parse_dt(end_s)
     if end_dt is None:
         return ""
@@ -290,7 +287,7 @@ def remain_text(end_s: str | None) -> str:
         return f"남음 {hours}시간 {mins}분"
     return f"남음 {mins}분"
 
-def fmt_start(start_s: str | None) -> str:
+def fmt_start(start_s):
     dt = parse_dt(start_s)
     if not dt:
         return (start_s or "").strip()
@@ -313,7 +310,7 @@ def _event_capacity_label(capacity, is_unlimited) -> str:
     except Exception:
         return "∞"
 
-def _get_event_counts(con, event_ids: list[str], user_id: str | None):
+def _get_event_counts(con, event_ids, user_id):
     if not event_ids:
         return {}, {}
     q_marks = ",".join(["?"] * len(event_ids))
@@ -347,7 +344,7 @@ def cleanup_ended_participation(user_id: str):
                 con.execute("DELETE FROM event_participants WHERE event_id=? AND user_id=?", (eid, user_id))
             con.commit()
 
-def get_joined_event_id(user_id: str) -> str | None:
+def get_joined_event_id(user_id: str):
     cleanup_ended_participation(user_id)
     with db_conn() as con:
         row = con.execute(
@@ -375,7 +372,6 @@ def list_active_events(limit: int = 500):
         ).fetchall()
     keys = ["id","title","photo","start","end","addr","lat","lng","created_at","user_id","capacity","is_unlimited"]
     events = [dict(zip(keys, r)) for r in rows]
-    # 파이썬에서 종료 필터 (DB 문자열 형식 불일치 대비)
     return [e for e in events if is_active_event(e.get("end"))]
 
 def events_for_page(user_id: str, page: int, page_size: int):
@@ -387,7 +383,6 @@ def events_for_page(user_id: str, page: int, page_size: int):
         ids = [e["id"] for e in chunk]
         counts, joined = _get_event_counts(con, ids, user_id)
 
-    # 참여중 1개 제한 때문에, 참여중인 이벤트가 있으면 다른 이벤트는 참여 불가 처리
     my_joined_id = get_joined_event_id(user_id)
 
     for e in chunk:
@@ -396,7 +391,7 @@ def events_for_page(user_id: str, page: int, page_size: int):
         e["joined"] = bool(joined.get(eid, False))
         cap_label = _event_capacity_label(e.get("capacity"), e.get("is_unlimited"))
         e["cap_label"] = cap_label
-        # 정원초과 여부
+
         is_full = False
         if cap_label != "∞":
             try:
@@ -404,7 +399,6 @@ def events_for_page(user_id: str, page: int, page_size: int):
             except Exception:
                 is_full = False
         e["is_full"] = is_full
-        # 참여 가능?
         e["can_join"] = (not is_full) and (my_joined_id is None or my_joined_id == eid)
 
     total_pages = (len(all_events) + page_size - 1) // page_size
@@ -420,7 +414,6 @@ def toggle_join(user_id: str, event_id: str):
         return False, "이미 종료된 이벤트입니다.", None
 
     with db_conn() as con:
-        # 이미 참여중인지
         already = con.execute(
             "SELECT 1 FROM event_participants WHERE event_id=? AND user_id=?",
             (event_id, user_id),
@@ -434,7 +427,6 @@ def toggle_join(user_id: str, event_id: str):
             con.commit()
             return True, "빠지기 완료", False
 
-        # 다른 이벤트 참여중인지 (1개 제한)
         row = con.execute(
             "SELECT event_id FROM event_participants WHERE user_id=? LIMIT 1",
             (user_id,),
@@ -442,7 +434,6 @@ def toggle_join(user_id: str, event_id: str):
         if row and row[0] != event_id:
             return False, "다른 활동에 참여중입니다. 먼저 빠지기 후 참여할 수 있습니다.", None
 
-        # 정원 확인
         cap_label = _event_capacity_label(ev.get("capacity"), ev.get("is_unlimited"))
         if cap_label != "∞":
             cnt = con.execute(
@@ -542,7 +533,6 @@ PUBLIC_PATH_PREFIXES = (
 async def auth_guard(request: Request, call_next):
     path = request.url.path
 
-    # API는 JSON으로 401
     if path.startswith("/api/"):
         uid = get_user_id_from_request(request)
         if not uid:
@@ -552,15 +542,23 @@ async def auth_guard(request: Request, call_next):
     if path.startswith(PUBLIC_PATH_PREFIXES):
         return await call_next(request)
 
-    # Gradio 정적 리소스 허용
     if path.startswith("/assets") or path.startswith("/favicon"):
         return await call_next(request)
 
-    # /app, /map 등은 로그인 필요
     uid = get_user_id_from_request(request)
     if not uid:
         return RedirectResponse(url="/login", status_code=302)
     return await call_next(request)
+
+
+# -------------------------
+# 안전한 HTML 렌더 (format 금지)
+# -------------------------
+def render_html(template: str, mapping: dict) -> str:
+    out = template
+    for k, v in mapping.items():
+        out = out.replace(k, v)
+    return out
 
 
 # -------------------------
@@ -599,6 +597,7 @@ LOGIN_HTML = """<!doctype html>
         <input name="password" type="password" required placeholder="비밀번호" />
         <button class="btn" type="submit">로그인</button>
       </form>
+      __ERROR_BLOCK__
       <div class="link">계정이 없으신가요? <a href="/signup">회원가입</a></div>
     </div>
   </div>
@@ -606,12 +605,12 @@ LOGIN_HTML = """<!doctype html>
 </html>
 """
 
-
 @app.get("/login")
 async def login_get(request: Request):
     err = request.query_params.get("err", "")
     error_block = f'<div class="err">{html.escape(err)}</div>' if err else ""
-    return HTMLResponse(LOGIN_HTML)
+    page = render_html(LOGIN_HTML, {"__ERROR_BLOCK__": error_block})
+    return HTMLResponse(page)
 
 @app.post("/login")
 async def login_post(email: str = Form(...), password: str = Form(...)):
@@ -629,7 +628,6 @@ async def login_post(email: str = Form(...), password: str = Form(...)):
     resp.set_cookie(COOKIE_NAME, token, max_age=SESSION_HOURS*3600, httponly=True, samesite="lax", path="/")
     return resp
 
-
 @app.get("/logout")
 async def logout(request: Request):
     token = request.cookies.get(COOKIE_NAME)
@@ -643,7 +641,7 @@ async def logout(request: Request):
 
 
 # -------------------------
-# Signup page (이메일 분리 + 약관 UI 정렬)
+# Signup page (format 금지)
 # -------------------------
 SIGNUP_HTML = """<!doctype html>
 <html lang="ko">
@@ -713,7 +711,7 @@ SIGNUP_HTML = """<!doctype html>
         <input type="hidden" id="email_full" name="email" />
 
         <button type="button" class="btn-ghost" onclick="sendOtp()">이메일 인증하기</button>
-        <div id="otp_status" class="{otp_class}">{otp_msg}</div>
+        <div id="otp_status" class="__OTP_CLASS__">__OTP_MSG__</div>
 
         <label>인증번호</label>
         <input name="otp" required placeholder="인증번호 6자리" inputmode="numeric" />
@@ -791,7 +789,7 @@ SIGNUP_HTML = """<!doctype html>
       </form>
 
       <div class="link">이미 아이디가 있으신가요? <a href="/login">로그인</a></div>
-      {error_block}
+      __ERROR_BLOCK__
     </div>
   </div>
 
@@ -856,7 +854,6 @@ function validateSignup() {
     alert("이메일을 입력해 주세요.");
     return false;
   }
-  // 필수 약관 체크
   const reqs = Array.from(document.querySelectorAll(".t_req"));
   const ok = reqs.every(cb => cb.checked);
   if (!ok) {
@@ -870,20 +867,26 @@ function validateSignup() {
 </html>
 """
 
-
 @app.get("/signup")
 async def signup_get(request: Request):
     err = request.query_params.get("err", "")
     ok = request.query_params.get("ok", "")
+
+    error_block = f'<div class="err">{html.escape(err)}</div>' if err else ""
+    otp_class = "muted"
+    otp_msg = ""
+
     if ok:
-        error_block = f'<div class="ok">{html.escape(ok)}</div>'
+        # ok 메시지를 otp 영역에도 보여주고 싶으면 여기 유지
         otp_class = "ok"
         otp_msg = html.escape(ok)
-    else:
-        error_block = f'<div class="err">{html.escape(err)}</div>' if err else ""
-        otp_class = "muted"
-        otp_msg = ""
-    return HTMLResponse(SIGNUP_HTML.format(error_block=error_block, otp_class=otp_class, otp_msg=otp_msg))
+
+    page = render_html(SIGNUP_HTML, {
+        "__ERROR_BLOCK__": error_block,
+        "__OTP_CLASS__": otp_class,
+        "__OTP_MSG__": otp_msg,
+    })
+    return HTMLResponse(page)
 
 def _gen_otp() -> str:
     import random
@@ -897,7 +900,6 @@ async def send_email_otp(payload: dict):
     otp = _gen_otp()
     expires = now_kst() + timedelta(minutes=10)
 
-    # 메일 발송(SMTP): 운영에서는 반드시 설정 필요
     SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
     SMTP_PORT = int((os.getenv("SMTP_PORT", "587") or "587").strip())
     SMTP_USER = os.getenv("SMTP_USER", "").strip()
@@ -961,7 +963,6 @@ async def signup_post(
         if otp != db_otp:
             return RedirectResponse(url="/signup?err=" + requests.utils.quote("인증번호가 올바르지 않습니다."), status_code=302)
 
-        # 중복 이메일
         if con.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
             return RedirectResponse(url="/signup?err=" + requests.utils.quote("이미 가입된 이메일입니다."), status_code=302)
 
@@ -977,9 +978,9 @@ async def signup_post(
     return RedirectResponse(url="/login?err=" + requests.utils.quote("가입이 완료되었습니다. 로그인해 주세요."), status_code=302)
 
 
-# -------------------------
+# =========================================================
 # JSON API
-# -------------------------
+# =========================================================
 @app.get("/api/events_json")
 async def api_events_json(request: Request):
     uid = require_user(request)
@@ -1022,7 +1023,6 @@ async def api_events_json(request: Request):
         })
     return JSONResponse({"ok": True, "events": out})
 
-
 @app.get("/api/my_join")
 async def api_my_join(request: Request):
     uid = require_user(request)
@@ -1046,7 +1046,6 @@ async def api_my_join(request: Request):
         "count": int(cnt),
         "cap_label": cap_label,
     }})
-
 
 @app.post("/api/toggle_join")
 async def api_toggle_join(request: Request):
@@ -1108,7 +1107,7 @@ async def map_page(request: Request):
 <body>
 <div id="map"></div>
 
-<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={appkey}"></script>
+<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey=__APPKEY__"></script>
 <script>
   const DEFAULT_CENTER = new kakao.maps.LatLng(36.0190, 129.3435);
   const map = new kakao.maps.Map(document.getElementById('map'), {
@@ -1159,7 +1158,7 @@ async def map_page(request: Request):
       m.setMap(map);
       markers.set(e.id, m);
       kakao.maps.event.addListener(m, 'click', () => {
-        if (openIw) openIw.close();    // ✅ 마커 클릭 시 하나만 열리게
+        if (openIw) openIw.close();
         const iw = new kakao.maps.InfoWindow({
           content: renderInfo(e),
           removable: false
@@ -1190,19 +1189,13 @@ async def map_page(request: Request):
       pruneMarkers(valid);
       events.forEach(upsertMarker);
 
-      // ✅ 열린 인포윈도우 내용만 갱신
       if (openIw && openIw.__eid) {
         const eid = openIw.__eid;
         const cur = eventsById.get(eid);
-        if (cur) {
-          openIw.setContent(renderInfo(cur));
-        } else {
-          openIw.close();
-          openIw = null;
-        }
+        if (cur) openIw.setContent(renderInfo(cur));
+        else { openIw.close(); openIw = null; }
       }
 
-      // Gradio 쪽에도 갱신 요청
       if (window.parent) {
         window.parent.postMessage({type:'OSEYO_SYNC'}, '*');
       }
@@ -1220,10 +1213,7 @@ async def map_page(request: Request):
         body: JSON.stringify({event_id:eid})
       });
       const d = await r.json();
-      if (!d.ok) {
-        alert(d.message || '오류');
-        return;
-      }
+      if (!d.ok) { alert(d.message || '오류'); return; }
       await refresh();
     } catch (e) {
       alert('네트워크 오류');
@@ -1235,12 +1225,13 @@ async def map_page(request: Request):
 </script>
 </body>
 </html>
-""".format(appkey=KAKAO_JAVASCRIPT_KEY)
+"""
+    html_page = html_page.replace("__APPKEY__", KAKAO_JAVASCRIPT_KEY)
     return HTMLResponse(html_page)
 
 
 # =========================================================
-# 8) Gradio UI (/app)
+# 8) Gradio UI (/app)  ※ 아래는 네가 준 그대로 유지
 # =========================================================
 CSS = r"""
 :root {
@@ -1339,7 +1330,7 @@ def decode_photo(photo_b64: str):
         return None
 
 
-def card_md(e: dict) -> tuple[str, str]:
+def card_md(e: dict):
     title = html.escape((e.get("title") or "").strip())
     addr = html.escape((e.get("addr") or "").strip())
     start = html.escape(fmt_start(e.get("start")))
@@ -1607,7 +1598,7 @@ def save_event(
     start: str,
     end: str,
     addr_text: str,
-    picked_addr: dict | None,
+    picked_addr,
     capacity: int,
     unlimited: bool,
     req: gr.Request
@@ -1734,7 +1725,6 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             with gr.Tabs():
                 with gr.Tab("작성하기"):
                     gr.Markdown("#### ⭐ 자주하는 활동")
-                    # ✅ 잘림 방지(HTML + wrap)
                     gr.HTML("<div class=\"note\">버튼을 누르면 이벤트명에 바로 입력됩니다.</div>")
 
                     fav_select_btns = []
@@ -1791,7 +1781,6 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             close_btn = gr.Button("닫기", elem_classes=["btn-close"])
             create_btn = gr.Button("등록하기", elem_classes=["btn-primary"])
 
-    # ✅ 사진 업로드 모달(토글이 아니라 별도 모달)
     img_modal = gr.Column(visible=False, elem_classes=["main-modal"])
     with img_modal:
         gr.HTML("<div class='modal-header'>사진 업로드</div>")
@@ -1960,6 +1949,3 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
-
-
-
