@@ -666,32 +666,40 @@ async def login_get(request: Request):
 @app.post("/login")
 async def login_post(email: str = Form(...), password: str = Form(...)):
     email = (email or "").strip().lower()
+
     with db_conn() as con:
-    try:
-        row = con.execute("SELECT id, pw_hash FROM users WHERE email=?", (email,)).fetchone()
-    except sqlite3.OperationalError:
-        # 구버전 DB: email 컬럼이 없고 id에 이메일을 넣어 쓰던 경우 대비
-        row = con.execute("SELECT id, pw_hash FROM users WHERE id=?", (email,)).fetchone()
+        try:
+            row = con.execute(
+                "SELECT id, pw_hash FROM users WHERE email=?",
+                (email,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # 구버전 DB( email 컬럼 없던 시절 ) 대비
+            row = con.execute(
+                "SELECT id, pw_hash FROM users WHERE id=?",
+                (email,),
+            ).fetchone()
+
     if not row:
-        return RedirectResponse(url="/login?err=" + requests.utils.quote("존재하지 않는 계정입니다."), status_code=302)
+        return RedirectResponse(
+            url="/login?err=" + requests.utils.quote("존재하지 않는 계정입니다."),
+            status_code=302,
+        )
+
     uid, ph = row
     if not pw_verify(password, ph):
-        return RedirectResponse(url="/login?err=" + requests.utils.quote("비밀번호가 올바르지 않습니다."), status_code=302)
+        return RedirectResponse(
+            url="/login?err=" + requests.utils.quote("비밀번호가 올바르지 않습니다."),
+            status_code=302,
+        )
 
     token = create_session(uid)
     resp = RedirectResponse(url="/app", status_code=302)
-    resp.set_cookie(COOKIE_NAME, token, max_age=SESSION_HOURS*3600, httponly=True, samesite="lax", path="/")
-    return resp
-
-@app.get("/logout")
-async def logout(request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    if token:
-        with db_conn() as con:
-            con.execute("DELETE FROM sessions WHERE token=?", (token,))
-            con.commit()
-    resp = RedirectResponse(url="/login", status_code=302)
-    resp.delete_cookie(COOKIE_NAME, path="/")
+    resp.set_cookie(
+        COOKIE_NAME, token,
+        max_age=SESSION_HOURS * 3600,
+        httponly=True, samesite="lax", path="/"
+    )
     return resp
 
 
@@ -2008,5 +2016,6 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
 
