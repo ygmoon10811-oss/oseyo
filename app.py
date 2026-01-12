@@ -1032,13 +1032,8 @@ def _gen_otp() -> str:
     import random
     return "".join(str(random.randint(0, 9)) for _ in range(6))
 
-
 @app.post("/send_email_otp")
 async def send_email_otp(request: Request):
-    """
-    ★ 여기서 어떤 예외가 나도 500을 내지 않게 한다.
-    프론트는 res.ok를 보지 않고 data.ok를 보게 되어 있음.
-    """
     try:
         try:
             payload = await request.json()
@@ -1060,25 +1055,27 @@ async def send_email_otp(request: Request):
         SMTP_PORT_RAW = (os.getenv("SMTP_PORT", "587") or "587").strip()
         try:
             SMTP_PORT = int(SMTP_PORT_RAW)
-        except Exception:
+        except ValueError:
+            return JSONResponse({"ok": False, "message": "SMTP_PORT가 숫자가 아닙니다."}, status_code=200)
+
+        if not (SMTP_HOST and SMTP_USER and SMTP_PASS and FROM_EMAIL):
             return JSONResponse(
-                {
-                    "ok": False,
-                    "message": f"SMTP_PORT가 숫자가 아닙니다. (현재 값: {SMTP_PORT_RAW})"
-                },
+                {"ok": False, "message": "SMTP 환경변수가 설정되지 않았습니다."},
                 status_code=200,
             )
-        
-        # OTP 저장
+
         with db_conn() as con:
             con.execute(
-                "INSERT INTO email_otps(email,otp,expires_at) VALUES(?,?,?) "
-                "ON CONFLICT(email) DO UPDATE SET otp=excluded.otp, expires_at=excluded.expires_at",
+                """
+                INSERT INTO email_otps(email, otp, expires_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(email)
+                DO UPDATE SET otp=excluded.otp, expires_at=excluded.expires_at
+                """,
                 (email, otp, expires.isoformat()),
             )
             con.commit()
 
-        # SMTP 발송
         try:
             import smtplib
             from email.mime.text import MIMEText
@@ -1092,21 +1089,20 @@ async def send_email_otp(request: Request):
                 s.starttls()
                 s.login(SMTP_USER, SMTP_PASS)
                 s.send_message(msg)
+
         except Exception:
             return JSONResponse(
-                {
-                    "ok": False,
-                    "message": "메일 발송에 실패했습니다. SMTP 설정/비밀번호(앱 비밀번호)/방화벽을 확인해 주세요.",
-                },
+                {"ok": False, "message": "메일 발송에 실패했습니다."},
                 status_code=200,
             )
 
         return JSONResponse({"ok": True}, status_code=200)
 
     except Exception:
-        # 최후 방어: 절대 500으로 터지지 않게
-        return JSONResponse({"ok": False, "message": "서버 내부 오류로 인증번호 발송에 실패했습니다."}, status_code=200)
-
+        return JSONResponse(
+            {"ok": False, "message": "서버 내부 오류로 인증번호 발송에 실패했습니다."},
+            status_code=200,
+        )
 
 @app.post("/signup")
 async def signup_post(
@@ -2242,6 +2238,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
 
 
