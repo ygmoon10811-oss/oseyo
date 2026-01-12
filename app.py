@@ -109,6 +109,44 @@ def init_db():
             """
         )
 
+        # users 테이블이 "이미 존재"하는 경우(구버전 DB) email 컬럼이 없을 수 있음 → 보강
+        if not _col_exists(con, "users", "email"):
+            try:
+                con.execute("ALTER TABLE users ADD COLUMN email TEXT;")
+            except Exception:
+                pass
+
+        if not _col_exists(con, "users", "pw_hash"):
+            try:
+                con.execute("ALTER TABLE users ADD COLUMN pw_hash TEXT;")
+            except Exception:
+                pass
+
+        if not _col_exists(con, "users", "name"):
+            try:
+                con.execute("ALTER TABLE users ADD COLUMN name TEXT;")
+            except Exception:
+                pass
+
+        if not _col_exists(con, "users", "gender"):
+            try:
+                con.execute("ALTER TABLE users ADD COLUMN gender TEXT;")
+            except Exception:
+                pass
+
+        if not _col_exists(con, "users", "birth"):
+            try:
+                con.execute("ALTER TABLE users ADD COLUMN birth TEXT;")
+            except Exception:
+                pass
+
+        if not _col_exists(con, "users", "created_at"):
+            try:
+                con.execute("ALTER TABLE users ADD COLUMN created_at TEXT;")
+            except Exception:
+                pass
+
+
         # sessions
         con.execute(
             """
@@ -629,7 +667,11 @@ async def login_get(request: Request):
 async def login_post(email: str = Form(...), password: str = Form(...)):
     email = (email or "").strip().lower()
     with db_conn() as con:
+    try:
         row = con.execute("SELECT id, pw_hash FROM users WHERE email=?", (email,)).fetchone()
+    except sqlite3.OperationalError:
+        # 구버전 DB: email 컬럼이 없고 id에 이메일을 넣어 쓰던 경우 대비
+        row = con.execute("SELECT id, pw_hash FROM users WHERE id=?", (email,)).fetchone()
     if not row:
         return RedirectResponse(url="/login?err=" + requests.utils.quote("존재하지 않는 계정입니다."), status_code=302)
     uid, ph = row
@@ -976,8 +1018,12 @@ async def signup_post(
             pass
         if otp != db_otp:
             return RedirectResponse(url="/signup?err=" + requests.utils.quote("인증번호가 올바르지 않습니다."), status_code=302)
+            try:
+                exists = con.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone()
+            except sqlite3.OperationalError:
+                exists = con.execute("SELECT 1 FROM users WHERE id=?", (email,)).fetchone()
 
-        if con.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
+        if exists:
             return RedirectResponse(url="/signup?err=" + requests.utils.quote("이미 가입된 이메일입니다."), status_code=302)
 
         uid = uuid.uuid4().hex
@@ -1240,8 +1286,8 @@ async def map_page(request: Request):
 </body>
 </html>
 """
-    html_page = html_page.replace("__APPKEY__", KAKAO_JAVASCRIPT_KEY)
-    return HTMLResponse(render_safe(html_page, APPKEY=KAKAO_JAVASCRIPT_KEY))
+    # ✅ format() 금지, 안전 치환만 사용
+    return HTMLResponse(render_safe(MAP_HTML, APPKEY=KAKAO_JAVASCRIPT_KEY))
 
 # =========================================================
 # 8) Gradio UI (/app)  ※ 아래는 네가 준 그대로 유지
@@ -1962,4 +2008,5 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
