@@ -137,7 +137,7 @@ def init_db():
             """
         )
 
-        # email otp
+        # email otp - 테이블 생성
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS email_otps (
@@ -147,6 +147,19 @@ def init_db():
             );
             """
         )
+        
+        # ⭐ email_otps 테이블 컬럼 보강 (추가)
+        if not _col_exists(con, "email_otps", "otp"):
+            try:
+                con.execute("ALTER TABLE email_otps ADD COLUMN otp TEXT;")
+            except Exception:
+                pass
+        
+        if not _col_exists(con, "email_otps", "expires_at"):
+            try:
+                con.execute("ALTER TABLE email_otps ADD COLUMN expires_at TEXT;")
+            except Exception:
+                pass
 
         # events
         con.execute(
@@ -206,7 +219,6 @@ def init_db():
         )
 
         con.commit()
-
 
 init_db()
 
@@ -2257,6 +2269,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
 
 
