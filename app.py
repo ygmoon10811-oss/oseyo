@@ -14,6 +14,48 @@ import requests
 from PIL import Image
 
 import gradio as gr
+import gradio as gr
+
+# --- Render/Gradio hotfix -------------------------------------------------------
+# Some gradio/gradio_client versions crash when JSON Schema uses boolean schemas
+# (e.g. "additionalProperties": false). Render then shows 500/502.
+# Patch gradio_client's schema parser to treat boolean-schemas as Any.
+_OSEYO_GRADIOCLIENT_BOOL_SCHEMA_PATCH = True
+try:
+    from gradio_client import utils as _gc_utils  # type: ignore
+
+    if not getattr(_gc_utils, "_OSEYO_PATCHED_BOOL_SCHEMA", False):
+        _orig_js2pt = getattr(_gc_utils, "json_schema_to_python_type", None)
+        _orig__js2pt = getattr(_gc_utils, "_json_schema_to_python_type", None)
+
+        def _js2pt_patched(schema, defs=None):
+            if isinstance(schema, bool):
+                return "Any"
+            # some versions pass (schema, defs) only
+            return _orig_js2pt(schema, defs) if _orig_js2pt else "Any"
+
+        # Patch both public + private helper if present
+        if _orig_js2pt:
+            _gc_utils.json_schema_to_python_type = _js2pt_patched  # type: ignore
+        if _orig__js2pt:
+            _gc_utils._json_schema_to_python_type = _js2pt_patched  # type: ignore
+
+        _orig_get_type = getattr(_gc_utils, "get_type", None)
+
+        def _get_type_patched(schema, defs=None):
+            if isinstance(schema, bool):
+                return "Any"
+            return _orig_get_type(schema, defs) if _orig_get_type else "Any"
+
+        if _orig_get_type:
+            _gc_utils.get_type = _get_type_patched  # type: ignore
+
+        _gc_utils._OSEYO_PATCHED_BOOL_SCHEMA = True  # type: ignore
+except Exception:
+    # If gradio_client isn't installed or APIs differ, ignore.
+    pass
+# -------------------------------------------------------------------------------
+
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 import uvicorn
@@ -620,11 +662,18 @@ async def root_redirect():
     return RedirectResponse(url="/app", status_code=302)
 
 
+
+@app.get("/healthz")
+async def healthz():
+    # Render health check endpoint (must return 200 without auth)
+    return {"ok": True}
 PUBLIC_PATH_PREFIXES = (
     "/login",
     "/signup",
     "/send_email_otp",
     "/static",
+    "/healthz",
+
 )
 
 
@@ -2296,3 +2345,10 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
+
+
+
+
+
+
