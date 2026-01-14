@@ -20,6 +20,10 @@ import gradio as gr
 # Some gradio/gradio_client versions crash when JSON Schema uses boolean schemas
 # (e.g. "additionalProperties": false). Render then shows 500/502.
 # Patch gradio_client's schema parser to treat boolean-schemas as Any.
+# Monkey-patch Gradio client's schema parser:
+# - Some Gradio/Gradio-client combos emit JSON Schema "boolean schemas" (true/false).
+# - Certain gradio_client versions assume schema is always a dict and crash when it's bool.
+# - Also, the function signatures differ across versions (1 arg vs 2 args), so we forward defensively.
 _OSEYO_GRADIOCLIENT_BOOL_SCHEMA_PATCH = True
 try:
     from gradio_client import utils as _gc_utils  # type: ignore
@@ -27,38 +31,66 @@ try:
     if not getattr(_gc_utils, "_OSEYO_PATCHED_BOOL_SCHEMA", False):
         _orig_js2pt = getattr(_gc_utils, "json_schema_to_python_type", None)
         _orig__js2pt = getattr(_gc_utils, "_json_schema_to_python_type", None)
+        _orig_get_type = getattr(_gc_utils, "get_type", None)
 
-        def _js2pt_patched(schema, defs=None):
+        def _call_maybe(orig, schema, defs=None):
+            if orig is None:
+                return "Any"
+            # Try common signatures across versions
+            try:
+                return orig(schema, defs)  # (schema, defs)
+            except TypeError:
+                pass
+            try:
+                return orig(schema)  # (schema)
+            except TypeError:
+                pass
+            try:
+                return orig(schema, defs=defs)  # (schema, defs=)
+            except TypeError:
+                pass
+            try:
+                return orig(schema=schema, defs=defs)
+            except TypeError:
+                pass
+            try:
+                return orig(schema=schema)
+            except Exception:
+                return "Any"
+            return "Any"
+
+        def _js2pt_patched(schema, defs=None, *args, **kwargs):
             if isinstance(schema, bool):
                 return "Any"
-            # some versions pass (schema, defs) only
-            return _orig_js2pt(schema, defs) if _orig_js2pt else "Any"
+            if _orig_js2pt is None:
+                return "Any"
+            # First try forwarding as-is (newer signatures), then fall back
+            try:
+                return _orig_js2pt(schema, defs, *args, **kwargs)
+            except TypeError:
+                return _call_maybe(_orig_js2pt, schema, defs)
 
-        # Patch both public + private helper if present
+        def _get_type_patched(schema, defs=None, *args, **kwargs):
+            if isinstance(schema, bool):
+                return "Any"
+            if _orig_get_type is None:
+                return "Any"
+            try:
+                return _orig_get_type(schema, defs, *args, **kwargs)
+            except TypeError:
+                return _call_maybe(_orig_get_type, schema, defs)
+
+        # Patch both public + private helpers if present
         if _orig_js2pt:
             _gc_utils.json_schema_to_python_type = _js2pt_patched  # type: ignore
         if _orig__js2pt:
             _gc_utils._json_schema_to_python_type = _js2pt_patched  # type: ignore
-
-        _orig_get_type = getattr(_gc_utils, "get_type", None)
-
-        def _get_type_patched(schema, defs=None):
-            if isinstance(schema, bool):
-                return "Any"
-            return _orig_get_type(schema, defs) if _orig_get_type else "Any"
-
         if _orig_get_type:
             _gc_utils.get_type = _get_type_patched  # type: ignore
 
-        _gc_utils._OSEYO_PATCHED_BOOL_SCHEMA = True  # type: ignore
+        _gc_utils._OSEYO_PATCHED_BOOL_SCHEMA = True
 except Exception:
-    # If gradio_client isn't installed or APIs differ, ignore.
     pass
-# -------------------------------------------------------------------------------
-
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
-import uvicorn
 
 # =========================================================
 # 0) 시간/키
