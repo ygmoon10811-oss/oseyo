@@ -1850,8 +1850,14 @@ def pick_addr(choice: str):
     lat = float(m.group(1)); lng = float(m.group(2))
     return gr.update(value=addr), gr.update(value={"addr": addr, "lat": lat, "lng": lng})
 
-def cap_toggle(is_unlimited: bool):
-    return gr.update(interactive=not bool(is_unlimited))
+def cap_toggle(is_unlimited):
+    # None, False, 0 등을 False로, 나머지를 True로 처리
+    try:
+        is_unlimited_bool = bool(is_unlimited)
+    except:
+        is_unlimited_bool = False
+    
+    return gr.update(interactive=not is_unlimited_bool)
 
 def close_modal():
     return gr.update(visible=False), gr.update(visible=False)
@@ -2269,6 +2275,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
 
 
