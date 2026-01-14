@@ -1038,32 +1038,44 @@ async def send_email_otp(request: Request):
         try:
             payload = await request.json()
         except Exception:
-            return JSONResponse({"ok": False, "message": "요청 JSON이 올바르지 않습니다."}, status_code=200)
+            return JSONResponse(
+                {"ok": False, "message": "요청 JSON이 올바르지 않습니다."}, 
+                status_code=200
+            )
 
         email = (payload.get("email") or "").strip().lower()
         if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
-            return JSONResponse({"ok": False, "message": "이메일 형식이 올바르지 않습니다."}, status_code=200)
+            return JSONResponse(
+                {"ok": False, "message": "이메일 형식이 올바르지 않습니다."}, 
+                status_code=200
+            )
 
         otp = _gen_otp()
         expires = now_kst() + timedelta(minutes=10)
 
+        # SMTP 환경변수 확인
         SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
         SMTP_USER = os.getenv("SMTP_USER", "").strip()
         SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
         FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER).strip()
-
+        
         SMTP_PORT_RAW = (os.getenv("SMTP_PORT", "587") or "587").strip()
         try:
             SMTP_PORT = int(SMTP_PORT_RAW)
         except ValueError:
-            return JSONResponse({"ok": False, "message": "SMTP_PORT가 숫자가 아닙니다."}, status_code=200)
-
-        if not (SMTP_HOST and SMTP_USER and SMTP_PASS and FROM_EMAIL):
             return JSONResponse(
-                {"ok": False, "message": "SMTP 환경변수가 설정되지 않았습니다."},
-                status_code=200,
+                {"ok": False, "message": "SMTP_PORT가 숫자가 아닙니다."}, 
+                status_code=200
             )
 
+        # 환경변수가 설정되지 않은 경우
+        if not (SMTP_HOST and SMTP_USER and SMTP_PASS and FROM_EMAIL):
+            return JSONResponse(
+                {"ok": False, "message": "SMTP 환경변수가 설정되지 않았습니다."}, 
+                status_code=200
+            )
+
+        # OTP를 DB에 저장
         with db_conn() as con:
             con.execute(
                 """
@@ -1076,11 +1088,16 @@ async def send_email_otp(request: Request):
             )
             con.commit()
 
+        # 이메일 발송
         try:
             import smtplib
             from email.mime.text import MIMEText
 
-            msg = MIMEText(f"오세요 인증번호는 {otp} 입니다. (10분간 유효)", "plain", "utf-8")
+            msg = MIMEText(
+                f"오세요 인증번호는 {otp} 입니다. (10분간 유효)", 
+                "plain", 
+                "utf-8"
+            )
             msg["Subject"] = "[오세요] 이메일 인증번호"
             msg["From"] = FROM_EMAIL
             msg["To"] = email
@@ -1090,18 +1107,20 @@ async def send_email_otp(request: Request):
                 s.login(SMTP_USER, SMTP_PASS)
                 s.send_message(msg)
 
-        except Exception:
+        except Exception as e:
+            print(f"[SMTP Error] {str(e)}")  # 로그 출력
             return JSONResponse(
-                {"ok": False, "message": "메일 발송에 실패했습니다."},
-                status_code=200,
+                {"ok": False, "message": "메일 발송에 실패했습니다."}, 
+                status_code=200
             )
 
         return JSONResponse({"ok": True}, status_code=200)
 
-    except Exception:
+    except Exception as e:
+        print(f"[OTP Error] {str(e)}")  # 로그 출력
         return JSONResponse(
-            {"ok": False, "message": "서버 내부 오류로 인증번호 발송에 실패했습니다."},
-            status_code=200,
+            {"ok": False, "message": "서버 내부 오류로 인증번호 발송에 실패했습니다."}, 
+            status_code=200
         )
 
 @app.post("/signup")
@@ -2238,6 +2257,7 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
 
 
