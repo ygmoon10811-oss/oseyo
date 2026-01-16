@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: GET_TYPE_ONLY_PATCH ###", flush=True)
+print("### DEPLOY MARKER: SCHEMA_PATCH_V2 ###", flush=True)
 import os
 import io
 import re
@@ -19,30 +19,60 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Resp
 import requests
 from PIL import Image
 
-import gradio as gr
 
-# --- BEGIN: Render-safe gradio_client bool-schema hotfix (patch get_type only) ---
-# Certain gradio_client versions assume JSON Schema is always a dict and crash when schema is bool.
-# JSON Schema allows boolean schemas (true/false), e.g. additionalProperties: false.
-# We patch ONLY get_type(schema) to return a safe type for boolean schemas.
+# --- BEGIN: Render-safe gradio_client bool-schema hotfix (patch schema parser safely) ---
+# Render 환경에서 gradio / gradio_client 조합에 따라 JSON Schema에 boolean schema(True/False)가 섞여 나오면
+# gradio_client.utils가 이를 dict로 가정하고 api_info 생성 과정에서 500을 냅니다.
+# (예: APIInfoParseError: Cannot parse schema True)
+#
+# 아래 패치는 "함수 시그니처(인자 개수)" 차이로 또 터지지 않게 *args/**kwargs로 감싸서
+# schema가 bool이거나 파싱이 실패하면 안전하게 "Any"로 떨어뜨립니다.
 try:
     from gradio_client import utils as _gc_utils  # type: ignore
 
     if not getattr(_gc_utils, "_OSEYO_PATCHED_BOOL_SCHEMA", False):
-        _orig_get_type = getattr(_gc_utils, "get_type", None)
+        _APIInfoParseError = getattr(_gc_utils, "APIInfoParseError", Exception)
 
-        def _get_type_patched(schema):
-            if isinstance(schema, bool):
-                return "Any"
-            return _orig_get_type(schema) if _orig_get_type else "Any"
+        def _schema_from(args, kwargs):
+            if "schema" in kwargs:
+                return kwargs.get("schema")
+            return args[0] if args else None
 
-        if _orig_get_type:
-            _gc_utils.get_type = _get_type_patched  # type: ignore
+        def _wrap(orig):
+            def _wrapped(*args, **kwargs):
+                schema = _schema_from(args, kwargs)
+                # JSON Schema boolean schema(True/False) 방어
+                if isinstance(schema, bool):
+                    return "Any"
+                try:
+                    return orig(*args, **kwargs)
+                except _APIInfoParseError:
+                    # api_info 생성에서 타입 힌트용이므로, 파싱 실패시에도 앱은 살아있게 둠
+                    return "Any"
+                except TypeError:
+                    # 시그니처가 다른 버전 대비: 최소 인자로 재시도
+                    try:
+                        return orig(schema)
+                    except Exception:
+                        return "Any"
+                except Exception:
+                    raise
+            return _wrapped
+
+        # Patch public + private helpers if present
+        if hasattr(_gc_utils, "json_schema_to_python_type"):
+            _gc_utils.json_schema_to_python_type = _wrap(_gc_utils.json_schema_to_python_type)  # type: ignore
+        if hasattr(_gc_utils, "_json_schema_to_python_type"):
+            _gc_utils._json_schema_to_python_type = _wrap(_gc_utils._json_schema_to_python_type)  # type: ignore
+        if hasattr(_gc_utils, "get_type"):
+            _gc_utils.get_type = _wrap(_gc_utils.get_type)  # type: ignore
 
         _gc_utils._OSEYO_PATCHED_BOOL_SCHEMA = True
 except Exception:
     pass
 # --- END ---
+
+import gradio as gr
 
 # =========================================================
 # 0) 시간/키
@@ -2253,8 +2283,14 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
         ],
     )
 
-app = gr.mount_gradio_app(app, demo, path="/app")
+app = gr.mount_gradio_app(app, demo, path="/app", show_api=False)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
+
+
+
+
+
 
