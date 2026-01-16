@@ -73,6 +73,24 @@ except Exception:
 # --- END ---
 
 import gradio as gr
+# --- BEGIN: hard-stop Gradio api_info crash (Render-safe) ---
+try:
+    from gradio.blocks import Blocks
+
+    _orig_get_api_info = Blocks.get_api_info
+
+    def _get_api_info_safe(self, *args, **kwargs):
+        try:
+            return _orig_get_api_info(self, *args, **kwargs)
+        except Exception as e:
+            print(f"[WARN] Blocks.get_api_info failed, returning empty: {e}", flush=True)
+            return {}  # 절대 500 안 나게
+
+    Blocks.get_api_info = _get_api_info_safe
+except Exception as _e:
+    print(f"[WARN] could not patch Blocks.get_api_info: {_e}", flush=True)
+# --- END ---
+
 
 # =========================================================
 # 0) 시간/키
@@ -2287,6 +2305,7 @@ app = gr.mount_gradio_app(app, demo, path="/app", show_api=False)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
 
 
 
