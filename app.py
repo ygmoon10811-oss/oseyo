@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: UI_FIX_V9 ###", flush=True)
+print("### DEPLOY MARKER: UI_FIX_V11 ###", flush=True)
 import os
 import io
 import re
@@ -1796,6 +1796,29 @@ def _dt_to_store(v):
     return str(v).strip()
 
 
+def _combine_date_time(date_v, hh: str, mm: str) -> str:
+    """date_v(날짜) + hh/mm(문자열)를 'YYYY-MM-DD HH:MM'로 합친다. 초는 저장하지 않는다."""
+    if not date_v:
+        return ''
+    # date_v can be date/datetime/str
+    try:
+        import datetime as _dt
+        if isinstance(date_v, _dt.datetime):
+            d = date_v.date().isoformat()
+        elif isinstance(date_v, _dt.date):
+            d = date_v.isoformat()
+        else:
+            d = str(date_v).strip()[:10]
+    except Exception:
+        d = str(date_v).strip()[:10]
+    if not d:
+        return ''
+    hh = (str(hh).zfill(2))[:2]
+    mm = (str(mm).zfill(2))[:2]
+    return f"{d} {hh}:{mm}"
+
+
+
 def card_md(e: dict):
     title = html.escape((e.get("title") or "").strip())
     addr = html.escape((e.get("addr") or "").strip())
@@ -2028,42 +2051,34 @@ def open_main_modal(req: gr.Request):
     uid = require_user(req.request)
     favs = get_top_favs(10)
 
-    # fav 버튼 세팅
-    fav_btn_updates = []
-    for i in range(10):
-        if i < len(favs):
-            name = favs[i]["name"]
-            fav_btn_updates.extend([
-                gr.update(value=f"⭐ {name}", visible=True),
-                gr.update(value="−", visible=True, interactive=True),
-                gr.update(value=name),
-            ])
-        else:
-            fav_btn_updates.extend([
-                gr.update(value="", visible=False),
-                gr.update(value="−", visible=False, interactive=False),
-                gr.update(value=""),
-            ])
+    now = now_kst()
+    today = now.date().isoformat()
+    hh = f"{now.hour:02d}"
+    mm = f"{(now.minute // 5) * 5:02d}"
 
-    # 모달 오픈 시: 이전 입력값들 초기화(무한 정원 꼬임 방지)
     return (
         gr.update(visible=True),  # overlay
         gr.update(visible=True),  # main_modal
-        *fav_btn_updates,
+        *fav_updates(favs),
         gr.update(choices=my_events_for_user(uid), value=None),
         gr.update(value=""),  # fav_msg
         gr.update(value=""),  # del_msg
         gr.update(value=None),  # photo_preview
         gr.update(value=""),  # title
-        gr.update(value=None),  # start
-        gr.update(value=None),  # end
+        gr.update(value=today),  # start_date
+        gr.update(value=hh),     # start_hour
+        gr.update(value=mm),     # start_min
+        gr.update(value=None),   # end_date
+        gr.update(value=hh),     # end_hour
+        gr.update(value=mm),     # end_min
         gr.update(value=10, interactive=True),  # cap_slider
         gr.update(value=False),  # cap_unlimited
-        gr.update(value=""),  # addr_text
-        gr.update(value=""),  # picked_addr
-        gr.update(value=""),  # save_msg
+        gr.update(value=""),    # addr_text
+        gr.update(value=""),    # picked_addr
+        gr.update(value=""),    # save_msg
         True,
     )
+
 
 
 def select_fav(name: str):
@@ -2094,15 +2109,22 @@ def fav_updates(favs):
     out = []
     for i in range(10):
         if i < len(favs):
-            name = favs[i]["name"]
-            out.append(gr.update(value=f"⭐ {name}", visible=True))
-            out.append(gr.update(value="−", visible=True, interactive=True))
-            out.append(gr.update(value=name))
+            name = favs[i]['name']
+            out.extend([
+                gr.update(visible=True),
+                gr.update(value=f"⭐ {name}"),
+                gr.update(value='−', interactive=True),
+                gr.update(value=name),
+            ])
         else:
-            out.append(gr.update(value="", visible=False))
-            out.append(gr.update(value="−", visible=False, interactive=False))
-            out.append(gr.update(value=""))
+            out.extend([
+                gr.update(visible=False),
+                gr.update(value=''),
+                gr.update(value='−', interactive=False),
+                gr.update(value=''),
+            ])
     return tuple(out)
+
 
 
 # ---- 사진 업로드 모달 ----
@@ -2136,8 +2158,12 @@ def confirm_place(addr_preview: str, picked_json: str):
 def save_event(
     title: str,
     img_np,
-    start_v,
-    end_v,
+    start_date,
+    start_hour: str,
+    start_min: str,
+    end_date,
+    end_hour: str,
+    end_min: str,
     addr_text: str,
     picked_addr,
     capacity,
@@ -2175,8 +2201,8 @@ def save_event(
         if got:
             lat, lng = got
 
-    start_s = _dt_to_store(start_v)
-    end_s = _dt_to_store(end_v)
+    start_s = _combine_date_time(start_date, start_hour, start_min)
+    end_s = _combine_date_time(end_date, end_hour, end_min)
 
     sdt = parse_dt(start_s)
     edt = parse_dt(end_s)
@@ -2271,16 +2297,18 @@ a { color: inherit; }
 /* Favorites: delete button as small circle on top-right */
 .fav-grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top: 6px; }
 .fav-box { position:relative; }
-.fav-box .fav-main button { width:100% !important; border-radius:12px !important; background:#f3f4f6 !important; color:#111 !important; border:1px solid #e5e7eb !important; }
-.fav-box .fav-del button { position:absolute !important; top:6px !important; right:6px !important;
+.fav-box .fav-main button { width:100% !important; border-radius:12px !important; background:#f3f4f6 !important; color:#111 !important; border:1px solid #e5e7eb !important; padding-right:36px !important; }
+.fav-box .fav-del { position:absolute; top:6px; right:6px; }
+.fav-box .fav-del button {
   width:22px !important; height:22px !important; min-width:22px !important; padding:0 !important;
   border-radius:999px !important; background:#fff !important; border:1px solid #e5e7eb !important;
   color:#b91c1c !important; font-weight:900 !important; line-height:1 !important;
 }
 .fav-box .fav-del button:hover { background:#fee2e2 !important; border-color:#fecaca !important; }
 
-/* Events scroll list */
-.events-scroll { max-height: 72vh; overflow-y:auto; padding-right: 6px; }
+
+/* Events list (page scrolls) */
+.events-scroll { padding-right: 6px; }
 
 .event-card { background: rgba(255,255,255,.7); border:1px solid var(--line); border-radius:18px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06); margin-bottom:12px; }
 .event-img img { width:100% !important; border-radius:16px !important; object-fit:cover !important; height:220px !important; }
@@ -2295,8 +2323,11 @@ a { color: inherit; }
 .map-iframe iframe { width:100%; height: 70vh; min-height:520px; border:0; border-radius:18px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
 """
 
-# DateTime picker if available
-DateTimeComp = getattr(gr, 'DateTime', None)
+# Date/Time controls (no seconds)
+DateComp = getattr(gr, 'Date', None)
+HOUR_CHOICES = [f"{i:02d}" for i in range(24)]
+MIN_CHOICES = [f"{i:02d}" for i in range(0, 60, 5)]
+
 
 with gr.Blocks(css=CSS, title='오세요') as demo:
     with gr.Row(elem_classes=['header']):
@@ -2366,13 +2397,15 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
                     gr.Markdown('#### ⭐ 자주하는 활동')
                     gr.HTML("<div class='note'>버튼을 누르면 이벤트명에 바로 입력됩니다.</div>")
 
-                    fav_select_btns=[]; fav_del_btns=[]; fav_hidden_names=[]
+                    fav_boxes=[]; fav_select_btns=[]; fav_del_btns=[]; fav_hidden_names=[]
                     with gr.Column(elem_classes=['fav-grid']):
                         for i in range(10):
-                            with gr.Column(elem_classes=['fav-box']):
-                                b_main = gr.Button('', visible=False, elem_classes=['fav-main'])
-                                b_del = gr.Button('−', visible=False, elem_classes=['fav-del'])
+                            box = gr.Column(visible=False, elem_classes=['fav-box'])
+                            with box:
+                                b_main = gr.Button('', elem_classes=['fav-main'])
+                                b_del = gr.Button('−', elem_classes=['fav-del'])
                                 h_name = gr.Textbox(visible=False)
+                            fav_boxes.append(box)
                             fav_select_btns.append(b_main)
                             fav_del_btns.append(b_del)
                             fav_hidden_names.append(h_name)
@@ -2387,15 +2420,15 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
                     photo_preview = gr.Image(label='사진(미리보기)', interactive=False, height=160)
                     with gr.Row():
                         photo_add_btn = gr.Button('사진 업로드', variant='secondary')
-                        photo_clear_btn = gr.Button('사진 제거', variant='secondary')
-
-                    # DateTime pickers
-                    if DateTimeComp is not None:
-                        start = DateTimeComp(label='시작 일시')
-                        end = DateTimeComp(label='종료 일시(선택)')
-                    else:
-                        start = gr.Textbox(label='시작 일시', placeholder='예: 2026-01-12 18:00')
-                        end = gr.Textbox(label='종료 일시', placeholder='예: 2026-01-12 20:00 (선택)')
+                        photo_clear_btn = gr.Button('사진 제거', variant='secondary')                    # 날짜/시간 선택 (초 없음)
+                    with gr.Row():
+                        start_date = (DateComp(label='시작 날짜') if DateComp is not None else gr.Textbox(label='시작 날짜', placeholder='YYYY-MM-DD'))
+                        start_hour = gr.Dropdown(choices=HOUR_CHOICES, value='18', label='시', scale=1)
+                        start_min = gr.Dropdown(choices=MIN_CHOICES, value='00', label='분', scale=1)
+                    with gr.Row():
+                        end_date = (DateComp(label='종료 날짜(선택)') if DateComp is not None else gr.Textbox(label='종료 날짜(선택)', placeholder='YYYY-MM-DD'))
+                        end_hour = gr.Dropdown(choices=HOUR_CHOICES, value='18', label='시', scale=1)
+                        end_min = gr.Dropdown(choices=MIN_CHOICES, value='00', label='분', scale=1)
 
                     with gr.Row():
                         cap_slider = gr.Slider(1, 99, value=10, step=1, label='정원(1~99)')
@@ -2511,11 +2544,14 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
         inputs=None,
         outputs=[
             overlay, main_modal,
-            *sum([[fav_select_btns[i], fav_del_btns[i], fav_hidden_names[i]] for i in range(10)], []),
+            *sum([[fav_boxes[i], fav_select_btns[i], fav_del_btns[i], fav_hidden_names[i]] for i in range(10)], []),
             my_list,
             fav_msg, del_msg,
             photo_preview,
-            title, start, end, cap_slider, cap_unlimited,
+            title,
+            start_date, start_hour, start_min,
+            end_date, end_hour, end_min,
+            cap_slider, cap_unlimited,
             addr_text, picked_addr,
             save_msg,
             main_open,
@@ -2530,13 +2566,13 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
         fav_del_btns[i].click(
             fn=delete_fav_click,
             inputs=[fav_hidden_names[i]],
-            outputs=[fav_msg, *sum([[fav_select_btns[j], fav_del_btns[j], fav_hidden_names[j]] for j in range(10)], [])],
+            outputs=[fav_msg, *sum([[fav_boxes[j], fav_select_btns[j], fav_del_btns[j], fav_hidden_names[j]] for j in range(10)], [])],
         )
 
     fav_add_btn.click(
         fn=add_fav,
         inputs=[new_fav],
-        outputs=[fav_msg, *sum([[fav_select_btns[j], fav_del_btns[j], fav_hidden_names[j]] for j in range(10)], [])],
+        outputs=[fav_msg, *sum([[fav_boxes[j], fav_select_btns[j], fav_del_btns[j], fav_hidden_names[j]] for j in range(10)], [])],
     )
 
     cap_unlimited.change(fn=cap_toggle, inputs=[cap_unlimited], outputs=[cap_slider])
@@ -2572,7 +2608,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
     # 등록
     create_btn.click(
         fn=save_event,
-        inputs=[title, photo_preview, start, end, addr_text, picked_addr, cap_slider, cap_unlimited],
+        inputs=[title, photo_preview, start_date, start_hour, start_min, end_date, end_hour, end_min, addr_text, picked_addr, cap_slider, cap_unlimited],
         outputs=[save_msg, overlay, main_modal, main_open],
     ).then(
         fn=refresh_view,
