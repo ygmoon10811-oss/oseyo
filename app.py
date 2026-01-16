@@ -1,6 +1,5 @@
-print("### DEPLOY MARKER: GET_TYPE_ONLY_PATCH ###", flush=True)
-
 # -*- coding: utf-8 -*-
+print("### DEPLOY MARKER: GET_TYPE_ONLY_PATCH ###", flush=True)
 import os
 import io
 import re
@@ -12,13 +11,20 @@ import hashlib
 import html
 from datetime import datetime, timedelta, timezone
 
+import uvicorn
+
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
+
 import requests
 from PIL import Image
 
 import gradio as gr
-import gradio as gr
 
 # --- BEGIN: Render-safe gradio_client bool-schema hotfix (patch get_type only) ---
+# Certain gradio_client versions assume JSON Schema is always a dict and crash when schema is bool.
+# JSON Schema allows boolean schemas (true/false), e.g. additionalProperties: false.
+# We patch ONLY get_type(schema) to return a safe type for boolean schemas.
 try:
     from gradio_client import utils as _gc_utils  # type: ignore
 
@@ -26,8 +32,6 @@ try:
         _orig_get_type = getattr(_gc_utils, "get_type", None)
 
         def _get_type_patched(schema):
-            # JSON Schema는 True/False 자체를 schema로 허용함.
-            # 구버전 gradio_client는 dict라고 가정하고 `"const" in schema`에서 죽을 수 있음.
             if isinstance(schema, bool):
                 return "Any"
             return _orig_get_type(schema) if _orig_get_type else "Any"
@@ -39,6 +43,7 @@ try:
 except Exception:
     pass
 # --- END ---
+
 # =========================================================
 # 0) 시간/키
 # =========================================================
@@ -1591,78 +1596,6 @@ a { color: inherit; }
 # =========================================================
 # 8) Gradio UI (/app)  ※ 아래는 네 코드 그대로 유지
 # =========================================================
-CSS = r"""
-:root {
-  --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --accent:#111;
-  --card:#ffffffcc; --danger:#ef4444;
-}
-
-html, body, .gradio-container { background: var(--bg) !important; }
-.gradio-container { width:100% !important; max-width:1100px !important; margin:0 auto !important; }
-
-a { color: inherit; }
-
-.header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-top:8px; }
-.header h1 { font-size:26px; margin:0; }
-.header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
-
-.logout a { text-decoration:none; color: var(--muted); font-size:13px; }
-
-.section-title { font-weight:800; margin: 12px 0 6px; }
-.helper { color: var(--muted); font-size:12px; margin: 0 0 10px; }
-
-.fab-wrap { position:fixed; right:22px; bottom:22px; z-index:50; }
-.fab-btn button {
-  width:56px !important; height:56px !important; border-radius:999px !important;
-  background:#111 !important; color:#fff !important; font-size:22px !important;
-  box-shadow: 0 10px 24px rgba(0,0,0,.22) !important;
-}
-
-.overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55);
-  z-index: 60;
-}
-
-.main-modal {
-  position: fixed; left:50%; top:50%; transform: translate(-50%,-50%);
-  width: min(520px, calc(100vw - 20px));
-  height: min(760px, calc(100vh - 20px));
-  background: #fff;
-  border-radius: 18px;
-  border: 1px solid var(--line);
-  box-shadow: 0 18px 60px rgba(0,0,0,.25);
-  z-index: 70;
-  display:flex; flex-direction:column;
-  overflow:hidden;
-}
-.modal-header { padding: 16px 18px; border-bottom: 1px solid var(--line); font-weight:800; text-align:center; }
-.modal-body { padding: 14px 16px; overflow-y:auto; }
-.modal-footer { padding: 12px 16px; border-top: 1px solid var(--line); display:flex; gap:10px; }
-.modal-footer .btn-close button { background:#eee !important; color:#111 !important; border-radius:12px !important; }
-.modal-footer .btn-primary button { background:#111 !important; color:#fff !important; border-radius:12px !important; }
-.modal-footer .btn-danger button { background: var(--danger) !important; color:#fff !important; border-radius:12px !important; }
-
-.note { color: var(--muted); font-size:12px; line-height:1.4; white-space: normal; }
-
-.fav-grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top: 6px; }
-.fav-item { display:flex; align-items:stretch; gap:6px; }
-.fav-item .fav-main button { width:100% !important; border-radius:12px !important; background:#f3f4f6 !important; color:#111 !important; border:1px solid #e5e7eb !important; }
-.fav-item .fav-del button { width:38px !important; min-width:38px !important; padding:0 !important; border-radius:12px !important; background:#fff !important; color:#111 !important; border:1px solid #e5e7eb !important; }
-.fav-item .fav-del button:hover { background:#fee2e2 !important; border-color:#fecaca !important; color:#b91c1c !important; }
-
-.event-card { background: rgba(255,255,255,.7); border:1px solid var(--line); border-radius:18px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
-.event-img img { width:100% !important; border-radius:16px !important; object-fit:cover !important; height:220px !important; }
-@media (min-width: 900px) { .event-img img { height:180px !important; } }
-
-.join-btn button { border-radius:999px !important; background:#111 !important; color:#fff !important; font-weight:800 !important; }
-.join-btn button[disabled] { background:#9ca3af !important; }
-
-.joined-box { background: rgba(255,255,255,.8); border:1px solid var(--line); border-radius:18px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
-.joined-img img { width:100% !important; border-radius:16px !important; object-fit:cover !important; height:180px !important; }
-
-.map-iframe iframe { width:100%; height: 70vh; min-height:520px; border:0; border-radius:18px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
-"""
-
 def encode_img_to_b64(img_np) -> str:
     if img_np is None:
         return ""
@@ -2324,10 +2257,4 @@ app = gr.mount_gradio_app(app, demo, path="/app")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
-
-
-
-
-
-
 
