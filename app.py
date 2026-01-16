@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: UI_FIX_V11 ###", flush=True)
+print("### DEPLOY MARKER: UI_FIX_V13_DATE_PLACE_FAV ###", flush=True)
 import os
 import io
 import re
@@ -2012,30 +2012,39 @@ def delete_my_event(choice: str, req: gr.Request):
     return gr.update(value="삭제 완료"), gr.update(choices=my_events_for_user(uid), value=None)
 
 
-def search_addr(keyword: str):
-    docs = kakao_search(keyword, size=8)
+def search_addr_kw(keyword: str):
+    """장소 검색 결과를 '검색어 입력칸(드롭다운)'에 바로 choices로 채운다."""
+    kw = (keyword or "").strip()
+    docs = kakao_search(kw, size=8) if kw else []
     if not docs:
-        return gr.update(choices=[]), gr.update(value="검색 결과가 없습니다.")
+        return gr.update(choices=[], value=kw), gr.update(value="검색 결과가 없습니다.")
     choices = [f"{d['name']} | {d['addr']} | ({d['y']:.5f},{d['x']:.5f})" for d in docs]
-    return gr.update(choices=choices), gr.update(value=f"{len(choices)}건 검색됨")
+    return gr.update(choices=choices, value=kw), gr.update(value=f"{len(choices)}건 검색됨")
 
 
-def pick_addr(choice: str):
-    if not choice:
-        return gr.update(value=""), gr.update(value="")
+def pick_addr_kw(choice: str):
+    """검색어 입력칸에서 결과를 선택했을 때만 파싱해서 addr_preview/picked_tmp를 채운다."""
+    choice = (choice or "").strip()
+    if (not choice) or ("|" not in choice) or ("(" not in choice):
+        return gr.update(), gr.update()
+
     parts = [p.strip() for p in choice.split("|")]
     if len(parts) < 3:
-        return gr.update(value=""), gr.update(value="")
-    name, addr, ll = parts[0], parts[1], parts[2]
+        return gr.update(), gr.update()
+
+    addr = parts[1]
+    ll = parts[2]
     m = re.search(r"\(([-0-9.]+),\s*([-0-9.]+)\)", ll)
     if not m:
         return gr.update(value=addr), gr.update(value="")
+
     lat = float(m.group(1)); lng = float(m.group(2))
     payload = {"addr": addr, "lat": lat, "lng": lng}
     return gr.update(value=addr), gr.update(value=json.dumps(payload, ensure_ascii=False))
 
 
 def cap_toggle(is_unlimited):
+
     try:
         is_unlimited_bool = bool(is_unlimited)
     except Exception:
@@ -2068,7 +2077,7 @@ def open_main_modal(req: gr.Request):
         gr.update(value=today),  # start_date
         gr.update(value=hh),     # start_hour
         gr.update(value=mm),     # start_min
-        gr.update(value=None),   # end_date
+        gr.update(value=""),   # end_date
         gr.update(value=hh),     # end_hour
         gr.update(value=mm),     # end_min
         gr.update(value=10, interactive=True),  # cap_slider
@@ -2110,17 +2119,18 @@ def fav_updates(favs):
     for i in range(10):
         if i < len(favs):
             name = favs[i]['name']
+            name = (name or '').strip()
             out.extend([
-                gr.update(visible=True),
-                gr.update(value=f"⭐ {name}"),
-                gr.update(value='−', interactive=True),
-                gr.update(value=name),
+                gr.update(visible=True),                              # fav_box
+                gr.update(visible=True, value=f"⭐ {name}"),           # fav main
+                gr.update(visible=True, value='−', interactive=True), # fav del badge
+                gr.update(value=name),                                # hidden name
             ])
         else:
             out.extend([
                 gr.update(visible=False),
-                gr.update(value=''),
-                gr.update(value='−', interactive=False),
+                gr.update(visible=False, value=''),
+                gr.update(visible=False, value='−', interactive=False),
                 gr.update(value=''),
             ])
     return tuple(out)
@@ -2144,7 +2154,15 @@ def confirm_img(img_np):
 # ---- 장소 검색(서브 모달) ----
 
 def open_place_modal():
-    return gr.update(visible=True), gr.update(visible=True), gr.update(value=""), gr.update(choices=[]), gr.update(value="")
+    # overlay2, place_modal, addr_kw(choices/value), addr_status, addr_preview, picked_tmp
+    return (
+        gr.update(visible=True),
+        gr.update(visible=True),
+        gr.update(choices=[], value=""),
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value=""),
+    )
 
 
 def close_place_modal():
@@ -2262,9 +2280,33 @@ a { color: inherit; }
 .helper { color: var(--muted); font-size:12px; margin: 0 0 10px; }
 
 /* Floating + */
-.fab-wrap { position:fixed; right:22px; bottom:22px; z-index:50; }
-#fab_btn { width:56px !important; height:56px !important; min-width:56px !important; border-radius:999px !important; padding:0 !important; }
-#fab_btn button, #fab_btn .gr-button { width:56px !important; height:56px !important; border-radius:999px !important; background:#111 !important; color:#fff !important; font-size:26px !important; box-shadow: 0 10px 24px rgba(0,0,0,.22) !important; }
+#fab_btn {
+  position: fixed !important;
+  right: 22px !important;
+  bottom: 22px !important;
+  z-index: 9999 !important;
+  width: 56px !important;
+  height: 56px !important;
+  min-width: 56px !important;
+  max-width: 56px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+#fab_btn button, #fab_btn .gr-button {
+  width: 56px !important;
+  height: 56px !important;
+  min-width: 56px !important;
+  max-width: 56px !important;
+  padding: 0 !important;
+  border-radius: 999px !important;
+  background: #111 !important;
+  color: #fff !important;
+  font-size: 26px !important;
+  line-height: 1 !important;
+  box-shadow: 0 10px 24px rgba(0,0,0,.22) !important;
+}
 
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 60; }
 .overlay2 { z-index: 80; }
@@ -2297,10 +2339,10 @@ a { color: inherit; }
 /* Favorites: delete button as small circle on top-right */
 .fav-grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top: 6px; }
 .fav-box { position:relative; }
-.fav-box .fav-main button { width:100% !important; border-radius:12px !important; background:#f3f4f6 !important; color:#111 !important; border:1px solid #e5e7eb !important; padding-right:36px !important; }
-.fav-box .fav-del { position:absolute; top:6px; right:6px; }
-.fav-box .fav-del button {
-  width:22px !important; height:22px !important; min-width:22px !important; padding:0 !important;
+.fav-box .fav-main button, .fav-box button.fav-main { width:100% !important; border-radius:12px !important; background:#f3f4f6 !important; color:#111 !important; border:1px solid #e5e7eb !important; padding-right:36px !important; }
+.fav-box .fav-del, .fav-box button.fav-del { position:absolute !important; top:6px !important; right:6px !important; }
+.fav-box .fav-del button, .fav-box button.fav-del {
+  width:22px !important; height:22px !important; min-width:22px !important; max-width:22px !important; padding:0 !important;
   border-radius:999px !important; background:#fff !important; border:1px solid #e5e7eb !important;
   color:#b91c1c !important; font-weight:900 !important; line-height:1 !important;
 }
@@ -2323,8 +2365,7 @@ a { color: inherit; }
 .map-iframe iframe { width:100%; height: 70vh; min-height:520px; border:0; border-radius:18px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
 """
 
-# Date/Time controls (no seconds)
-DateComp = getattr(gr, 'Date', None)
+# Date/Time controls (no seconds): 날짜는 브라우저 캘린더(type=date), 시/분은 드롭다운
 HOUR_CHOICES = [f"{i:02d}" for i in range(24)]
 MIN_CHOICES = [f"{i:02d}" for i in range(0, 60, 5)]
 
@@ -2378,9 +2419,8 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
 
             map_html = gr.HTML("<div class='map-iframe'><iframe src='/map' loading='lazy'></iframe></div>", elem_classes=['map-iframe'])
 
-    # Floating action button
-    with gr.Row(elem_classes=['fab-wrap']):
-        fab = gr.Button('+', elem_id='fab_btn')
+    # Floating action button (fixed via CSS)
+    fab = gr.Button('+', elem_id='fab_btn')
 
     overlay = gr.HTML("<div class='overlay'></div>", visible=False, elem_classes=['overlay'])
     overlay2 = gr.HTML("<div class='overlay overlay2'></div>", visible=False, elem_classes=['overlay','overlay2'])
@@ -2422,11 +2462,11 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
                         photo_add_btn = gr.Button('사진 업로드', variant='secondary')
                         photo_clear_btn = gr.Button('사진 제거', variant='secondary')                    # 날짜/시간 선택 (초 없음)
                     with gr.Row():
-                        start_date = (DateComp(label='시작 날짜') if DateComp is not None else gr.Textbox(label='시작 날짜', placeholder='YYYY-MM-DD'))
+                        start_date = gr.Textbox(label='시작 날짜', placeholder='YYYY-MM-DD', elem_id='start_date')
                         start_hour = gr.Dropdown(choices=HOUR_CHOICES, value='18', label='시', scale=1)
                         start_min = gr.Dropdown(choices=MIN_CHOICES, value='00', label='분', scale=1)
                     with gr.Row():
-                        end_date = (DateComp(label='종료 날짜(선택)') if DateComp is not None else gr.Textbox(label='종료 날짜(선택)', placeholder='YYYY-MM-DD'))
+                        end_date = gr.Textbox(label='종료 날짜(선택)', placeholder='YYYY-MM-DD', elem_id='end_date')
                         end_hour = gr.Dropdown(choices=HOUR_CHOICES, value='18', label='시', scale=1)
                         end_min = gr.Dropdown(choices=MIN_CHOICES, value='00', label='분', scale=1)
 
@@ -2466,15 +2506,16 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
     with place_modal:
         gr.HTML("<div class='modal-header'>장소 검색</div>")
         with gr.Column(elem_classes=['modal-body']):
-            addr_kw = gr.Textbox(label='검색어', placeholder='예: 영일대, 카페, 도서관')
+            addr_kw = gr.Dropdown(label='검색어', choices=[], value='', allow_custom_value=True, elem_id='addr_kw')
             addr_search_btn = gr.Button('검색')
-            addr_choices = gr.Dropdown(label='검색 결과', choices=[])
             addr_status = gr.Markdown()
             addr_preview = gr.Textbox(label='선택된 장소', interactive=False)
             picked_tmp = gr.State('')
         with gr.Row(elem_classes=['modal-footer']):
             place_cancel = gr.Button('닫기', elem_classes=['btn-close'])
             place_confirm = gr.Button('선택', elem_classes=['btn-primary'])
+
+    js_hook = gr.Textbox(visible=False, elem_id='js_hook')
 
     # --- 초기 상태 강제 ---
     def _reset_on_load():
@@ -2489,6 +2530,27 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
         fn=_reset_on_load,
         inputs=None,
         outputs=[overlay, main_modal, overlay2, place_modal, overlay2, img_modal, main_open],
+    )
+
+    # 날짜 입력은 브라우저 캘린더(type=date) 강제 (초/오전오후 UI 방지)
+    demo.load(
+        fn=lambda: "",
+        inputs=None,
+        outputs=js_hook,
+        js="""
+() => {
+  const setDateType = (id) => {
+    const el = document.querySelector(`#${id} input`);
+    if (el) {
+      el.type = 'date';
+      el.step = '1';
+    }
+  };
+  setDateType('start_date');
+  setDateType('end_date');
+  return "";
+}
+"""
     )
 
     # --- 이벤트 뷰 로드 ---
@@ -2589,12 +2651,12 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
     place_open_btn.click(
         fn=open_place_modal,
         inputs=None,
-        outputs=[overlay2, place_modal, addr_kw, addr_choices, addr_status],
+        outputs=[overlay2, place_modal, addr_kw, addr_status, addr_preview, picked_tmp],
     )
     place_cancel.click(fn=close_place_modal, inputs=None, outputs=[overlay2, place_modal])
 
-    addr_search_btn.click(fn=search_addr, inputs=[addr_kw], outputs=[addr_choices, addr_status])
-    addr_choices.change(fn=pick_addr, inputs=[addr_choices], outputs=[addr_preview, picked_tmp])
+    addr_search_btn.click(fn=search_addr_kw, inputs=[addr_kw], outputs=[addr_kw, addr_status])
+    addr_kw.change(fn=pick_addr_kw, inputs=[addr_kw], outputs=[addr_preview, picked_tmp])
 
     place_confirm.click(
         fn=confirm_place,
