@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: UI_FIX_V7 ###", flush=True)
+print("### DEPLOY MARKER: UX_FIX_V8 ###", flush=True)
 import os
 import io
 import re
@@ -414,12 +414,25 @@ def fmt_start(start_s):
 # 4) 이벤트/참여 데이터
 # =========================================================
 def _event_capacity_label(capacity, is_unlimited) -> str:
+    """정원 표시용 라벨.
+
+    - unlimited는 DB에 1/0으로 저장하지만, 과거 데이터/마이그레이션 중 is_unlimited가 1로 잘못 들어간 경우가 있음.
+    - 우리 로직상 unlimited=True이면 capacity를 0으로 저장하므로, capacity>0이면 정원값을 우선한다.
+    """
     try:
+        # unlimited 플래그가 켜져 있어도 capacity가 양수면 capacity를 신뢰
         if is_unlimited == 1:
-            return "∞"
+            if capacity is None:
+                return "∞"
+            try:
+                cap_i = int(float(capacity))
+            except Exception:
+                return "∞"
+            return "∞" if cap_i <= 0 else str(cap_i)
+
         if capacity is None:
             return "∞"
-        cap_i = int(capacity)
+        cap_i = int(float(capacity))
         if cap_i <= 0:
             return "∞"
         return str(cap_i)
@@ -680,6 +693,71 @@ def kakao_search(keyword: str, size: int = 8):
         return []
 
 
+
+
+# Kakao 주소→좌표(geocode) (REST)
+def kakao_geocode(addr: str):
+    """도로명/지번 주소를 좌표로 변환. 실패하면 None 반환.
+
+    지도에 마커가 안 찍히는 대부분의 원인이 lat/lng가 NULL(또는 0)인 경우라
+    사용자가 검색 결과를 선택하지 않고 주소만 입력했을 때도 좌표를 채워준다.
+    """
+    if not KAKAO_REST_API_KEY:
+        return None
+    q = (addr or '').strip()
+    if not q:
+        return None
+    url = 'https://dapi.kakao.com/v2/local/search/address.json'
+    headers = {'Authorization': f'KakaoAK {KAKAO_REST_API_KEY}'}
+    try:
+        r = requests.get(url, headers=headers, params={'query': q, 'size': 1}, timeout=8)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        docs = data.get('documents') or []
+        if not docs:
+            # 주소로 안 되면 키워드로 한번 더
+            docs2 = kakao_search(q, size=1)
+            if docs2:
+                d = docs2[0]
+                return float(d.get('y') or 0), float(d.get('x') or 0)
+            return None
+        d0 = docs[0]
+        # kakao address API는 x=lng, y=lat
+        lat = float(d0.get('y') or 0)
+        lng = float(d0.get('x') or 0)
+        if abs(lat) < 0.01 or abs(lng) < 0.01:
+            return None
+        return lat, lng
+    except Exception:
+        return None
+
+
+# 이벤트 좌표 보강(프로세스 내 1회만 시도)
+_GEOCODE_TRIED = set()
+
+def ensure_event_coords(event: dict):
+    try:
+        eid = event.get('id')
+        if not eid or eid in _GEOCODE_TRIED:
+            return
+        lat = event.get('lat')
+        lng = event.get('lng')
+        # 0/None은 미설정으로 취급
+        if lat and lng and abs(float(lat)) > 0.01 and abs(float(lng)) > 0.01:
+            return
+        got = kakao_geocode(event.get('addr') or '')
+        _GEOCODE_TRIED.add(eid)
+        if not got:
+            return
+        lat2, lng2 = got
+        with db_conn() as con:
+            con.execute('UPDATE events SET lat=?, lng=? WHERE id=?', (lat2, lng2, eid))
+            con.commit()
+        event['lat'] = lat2
+        event['lng'] = lng2
+    except Exception:
+        return
 # =========================================================
 # 7) FastAPI 앱 (로그인/회원가입/지도/JSON API)
 # =========================================================
@@ -1305,6 +1383,7 @@ async def api_events_json(request: Request):
 
     out = []
     for e in events:
+        ensure_event_coords(e)
         eid = e["id"]
         cap_label = _event_capacity_label(e.get("capacity"), e.get("is_unlimited"))
         cnt = counts.get(eid, 0)
@@ -1321,8 +1400,8 @@ async def api_events_json(request: Request):
                 "id": eid,
                 "title": e.get("title") or "",
                 "addr": e.get("addr") or "",
-                "lat": e.get("lat") or 0,
-                "lng": e.get("lng") or 0,
+                "lat": (e.get("lat") if e.get("lat") is not None else None),
+                "lng": (e.get("lng") if e.get("lng") is not None else None),
                 "start": e.get("start") or "",
                 "end": e.get("end") or "",
                 "start_fmt": fmt_start(e.get("start")),
@@ -1476,6 +1555,7 @@ async def map_page(request: Request):
   }
 
   function upsertMarker(e) {
+    if (!e.lat || !e.lng) return;
     const pos = new kakao.maps.LatLng(e.lat, e.lng);
     if (!markers.has(e.id)) {
       const m = new kakao.maps.Marker({ position: pos });
@@ -1513,6 +1593,15 @@ async def map_page(request: Request):
       pruneMarkers(valid);
       events.forEach(upsertMarker);
 
+      if (!window.__oseyo_centered && events.length) {
+        // 첫 이벤트 좌표로 중심 이동
+        const first = events.find(e => e.lat && e.lng);
+        if (first) {
+          map.setCenter(new kakao.maps.LatLng(first.lat, first.lng));
+          window.__oseyo_centered = true;
+        }
+      }
+
       if (openIw && openIw.__eid) {
         const eid = openIw.__eid;
         const cur = eventsById.get(eid);
@@ -1520,9 +1609,8 @@ async def map_page(request: Request):
         else { openIw.close(); openIw = null; }
       }
 
-      if (window.parent) {
-        window.parent.postMessage({type:'OSEYO_SYNC'}, '*');
-      }
+      // NOTE: 부모(Gradio)로 sync 메시지를 보내면 Gradio가 계속 새로고침되어 로딩이 반복됨
+      //       그래서 지도는 사용자 액션(참여/빠지기) 때만 갱신한다.
     } catch (e) {
       console.warn(e);
     }
@@ -1545,7 +1633,8 @@ async def map_page(request: Request):
   }
 
   refresh();
-  setInterval(refresh, 2500);
+  // 자동 폴링 제거(정신사납게 로딩 반복 방지)
+  // setInterval(refresh, 2500);
 </script>
 </body>
 </html>
@@ -1980,6 +2069,12 @@ def save_event(
         lat = picked.get("lat")
         lng = picked.get("lng")
 
+    # 사용자가 검색 결과를 선택하지 않고 주소만 입력한 경우 lat/lng가 비어있을 수 있음 → geocode로 보강
+    if (lat is None or lng is None) and addr:
+        got = kakao_geocode(addr)
+        if got:
+            lat, lng = got
+
     if not addr:
         return gr.update(value="장소를 선택해 주세요."), *close_modal()
 
@@ -2169,26 +2264,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
         inputs=None,
         outputs=[overlay, main_modal, img_modal, main_open],
     )
-
-    demo.load(
-        fn=lambda: "",
-        inputs=None,
-        outputs=js_hook,
-        js="""
-() => {
-  if (!window.__oseyo_listener_installed) {
-    window.__oseyo_listener_installed = true;
-    window.addEventListener('message', (ev) => {
-      if (ev.data && ev.data.type === 'OSEYO_SYNC') {
-        const btn = document.getElementById('sync_btn');
-        if (btn) btn.click();
-      }
-    });
-  }
-  return "";
-}
-"""
-    )
+    # (자동 sync 제거) 지도에서 postMessage로 부모를 새로고침하면 로딩이 반복돼서 제거
 
     demo.load(
         fn=refresh_view,
@@ -2200,17 +2276,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             page_label, prev_btn, next_btn, page_state, msg_box
         ],
     )
-
-    sync_btn.click(
-        fn=refresh_view,
-        inputs=[page_state],
-        outputs=[
-            joined_wrap, joined_img, joined_info, joined_eid,
-            joined_wrap2, joined_img2, joined_info2, joined_eid2,
-            *sum([[cards[i], card_imgs[i], card_titles[i], card_metas[i], card_ids[i], card_btns[i]] for i in range(MAX_CARDS)], []),
-            page_label, prev_btn, next_btn, page_state, msg_box
-        ],
-    )
+    # sync_btn.click 제거(자동 로딩 방지)
 
     for i in range(MAX_CARDS):
         card_btns[i].click(
