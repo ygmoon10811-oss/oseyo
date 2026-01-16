@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: UI_FIX_V6 ###", flush=True)
+print("### DEPLOY MARKER: UI_FIX_V7 ###", flush=True)
 import os
 import io
 import re
@@ -1577,23 +1577,17 @@ a { color: inherit; }
 .helper { color: var(--muted); font-size:12px; margin: 0 0 10px; }
 
 #fab_btn {
-  position: fixed; right: 22px; bottom: 22px; z-index: 50;
-  width: 56px; height: 56px;
+  position: fixed; right: 22px; bottom: 22px; z-index: 9999;
 }
-#fab_btn button {
+#fab_btn, #fab_btn button, button#fab_btn {
   width: 56px !important; height: 56px !important;
   min-width: 56px !important; max-width: 56px !important;
   padding: 0 !important;
   border-radius: 999px !important;
   background: #111 !important; color: #fff !important;
   box-shadow: 0 10px 24px rgba(0,0,0,.22) !important;
-  font-size: 0 !important;
   display: flex !important; align-items: center !important; justify-content: center !important;
-}
-#fab_btn button::before {
-  content: "+";
-  font-size: 26px;
-  line-height: 1;
+  font-size: 26px !important; line-height: 1 !important;
 }
 
 .overlay {
@@ -1610,7 +1604,6 @@ a { color: inherit; }
   border: 1px solid var(--line);
   box-shadow: 0 18px 60px rgba(0,0,0,.25);
   z-index: 70;
-  display:flex; flex-direction:column;
   overflow:hidden;
 }
 .modal-header { padding: 16px 18px; border-bottom: 1px solid var(--line); font-weight:800; text-align:center; }
@@ -2085,7 +2078,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             )
 
     # Floating action button (원형 + 버튼)
-    fab = gr.Button("", elem_id="fab_btn")
+    fab = gr.Button("+", elem_id="fab_btn")
 
     overlay = gr.HTML("<div class='overlay'></div>", visible=False, elem_classes=["overlay"])
     main_open = gr.State(False)
