@@ -73,24 +73,6 @@ except Exception:
 # --- END ---
 
 import gradio as gr
-# --- BEGIN: hard-stop Gradio api_info crash (Render-safe) ---
-try:
-    from gradio.blocks import Blocks
-
-    _orig_get_api_info = Blocks.get_api_info
-
-    def _get_api_info_safe(self, *args, **kwargs):
-        try:
-            return _orig_get_api_info(self, *args, **kwargs)
-        except Exception as e:
-            print(f"[WARN] Blocks.get_api_info failed, returning empty: {e}", flush=True)
-            return {}  # 절대 500 안 나게
-
-    Blocks.get_api_info = _get_api_info_safe
-except Exception as _e:
-    print(f"[WARN] could not patch Blocks.get_api_info: {_e}", flush=True)
-# --- END ---
-
 
 # =========================================================
 # 0) 시간/키
@@ -1922,15 +1904,20 @@ def delete_fav_click(name: str):
     return gr.update(value="삭제 완료"), *fav_updates(get_top_favs(10))
 
 def open_img_modal():
-    return gr.update(visible=True)
+    # 사진 업로드 모달을 열 때 배경 오버레이도 함께 켠다 (로그인 직후 '난장판' 방지)
+    return gr.update(visible=True), gr.update(visible=True)
 
 def close_img_modal():
-    return gr.update(visible=False)
+    # 업로드 모달만 닫고, 메인 모달 흐름을 유지하려면 오버레이는 켜둔다
+    # (메인 모달이 열려있지 않은 상태에서 호출돼도 UI가 튀지 않게 하기 위해)
+    return gr.update(visible=True), gr.update(visible=False)
 
 def confirm_img(img_np):
+    # 업로드 모달 닫고 미리보기 업데이트
     return (
+        gr.update(visible=True),
         gr.update(visible=False),
-        gr.update(value=img_np)
+        gr.update(value=img_np),
     )
 
 def save_event(
@@ -2149,6 +2136,17 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     sync_btn = gr.Button("sync", visible=False, elem_id="sync_btn")
 
+    # 로그인/리다이렉트 직후 브라우저 상태에 따라 모달이 어중간하게 열려 보이는 경우가 있어
+    # 첫 로드시 모달들을 항상 닫아 초기 상태를 강제로 맞춘다.
+    def _reset_modals_on_load():
+        return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+
+    demo.load(
+        fn=_reset_modals_on_load,
+        inputs=None,
+        outputs=[overlay, main_modal, img_modal],
+    )
+
     demo.load(
         fn=lambda: "",
         inputs=None,
@@ -2279,9 +2277,9 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     addr_search_btn.click(fn=search_addr, inputs=[addr_kw], outputs=[addr_choices, addr_status])
     addr_choices.change(fn=pick_addr, inputs=[addr_choices], outputs=[addr_text, picked_addr])
 
-    photo_add_btn.click(fn=open_img_modal, inputs=None, outputs=[img_modal])
-    img_cancel.click(fn=close_img_modal, inputs=None, outputs=[img_modal])
-    img_confirm.click(fn=confirm_img, inputs=[img_uploader], outputs=[img_modal, photo_preview])
+    photo_add_btn.click(fn=open_img_modal, inputs=None, outputs=[overlay, img_modal])
+    img_cancel.click(fn=close_img_modal, inputs=None, outputs=[overlay, img_modal])
+    img_confirm.click(fn=confirm_img, inputs=[img_uploader], outputs=[overlay, img_modal, photo_preview])
     photo_clear_btn.click(fn=lambda: None, inputs=None, outputs=[photo_preview])
 
     del_btn.click(fn=delete_my_event, inputs=[my_list], outputs=[del_msg, my_list])
@@ -2305,7 +2303,6 @@ app = gr.mount_gradio_app(app, demo, path="/app", show_api=False)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
-
 
 
 
