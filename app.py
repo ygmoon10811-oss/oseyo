@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: SCHEMA_PATCH_V2 ###", flush=True)
+print("### DEPLOY MARKER: UI_FIX_V5 ###", flush=True)
 import os
 import io
 import re
@@ -141,7 +141,8 @@ print(f"[DB] Using: {DB_PATH}")
 
 
 def db_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+    # timeout을 줘서 동시 접근시 'database is locked'로 바로 죽지 않게 함
+    return sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
 
 
 def _col_exists(con, table: str, col: str) -> bool:
@@ -152,6 +153,12 @@ def _col_exists(con, table: str, col: str) -> bool:
 
 def init_db():
     with db_conn() as con:
+        # Render(동시요청)에서 SQLite 잠금 완화
+        try:
+            con.execute("PRAGMA journal_mode=WAL;")
+            con.execute("PRAGMA synchronous=NORMAL;")
+        except Exception:
+            pass
         # users
         con.execute(
             """
@@ -460,13 +467,21 @@ def cleanup_ended_participation(user_id: str):
 
 
 def get_joined_event_id(user_id: str):
-    cleanup_ended_participation(user_id)
+    """
+    종료된 이벤트 참여는 'DB에서 매번 삭제'하지 말고, 조회 시 active만 골라서 반환한다.
+    (지도 iframe이 2.5초마다 호출할 때도 쓰기 트랜잭션이 발생하지 않게 해서 네트워크 오류/잠금 감소)
+    """
     with db_conn() as con:
-        row = con.execute(
-            "SELECT event_id FROM event_participants WHERE user_id=? ORDER BY joined_at DESC LIMIT 1",
+        rows = con.execute(
+            "SELECT p.event_id, p.joined_at, e.end "
+            "FROM event_participants p LEFT JOIN events e ON e.id=p.event_id "
+            "WHERE p.user_id=? ORDER BY p.joined_at DESC",
             (user_id,),
-        ).fetchone()
-    return row[0] if row else None
+        ).fetchall()
+    for eid, _joined_at, end_s in rows:
+        if is_active_event(end_s):
+            return eid
+    return None
 
 
 def get_event_by_id(event_id: str):
@@ -1281,7 +1296,7 @@ async def signup_post(
 @app.get("/api/events_json")
 async def api_events_json(request: Request):
     uid = require_user(request)
-    cleanup_ended_participation(uid)
+    # cleanup_ended_participation(uid)  # 빈번 호출에서 쓰기 발생 → 잠금/네트워크 오류 원인
     events = list_active_events(limit=1500)
     with db_conn() as con:
         ids = [e["id"] for e in events]
@@ -1326,7 +1341,7 @@ async def api_events_json(request: Request):
 @app.get("/api/my_join")
 async def api_my_join(request: Request):
     uid = require_user(request)
-    cleanup_ended_participation(uid)
+    # cleanup_ended_participation(uid)  # 빈번 호출에서 쓰기 발생 → 잠금/네트워크 오류 원인
     eid = get_joined_event_id(uid)
     if not eid:
         return JSONResponse({"ok": True, "joined": False})
@@ -1706,7 +1721,7 @@ def refresh_view(page: int, req: gr.Request):
     except Exception:
         return _empty_refresh(page)
 
-    cleanup_ended_participation(uid)
+    # cleanup_ended_participation(uid)  # 빈번 호출에서 쓰기 발생 → 잠금/네트워크 오류 원인
 
     j_vis, j_img, j_info, j_eid = get_joined_view(uid)
     j2_vis, j2_img, j2_info, j2_eid = j_vis, j_img, j_info, j_eid
@@ -2011,12 +2026,11 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
         with gr.Tab("탐색"):
             gr.Markdown("### 열려 있는 활동", elem_classes=["section-title"])
             gr.Markdown("참여하기는 1개 활동만 가능하다. 다른 활동에 참여하려면 먼저 빠지기를 해야 한다.", elem_classes=["helper"])
-
-            joined_wrap = gr.Column(visible=False, elem_classes=["joined-box"])
-            joined_img = gr.Image(visible=True, interactive=False, elem_classes=["joined-img"])
-            joined_info = gr.Markdown()
-            joined_eid = gr.Textbox(visible=False)
-            joined_leave = gr.Button("빠지기", variant="stop", elem_classes=["join-btn"])
+            with gr.Column(visible=False, elem_classes=["joined-box"]) as joined_wrap:
+                joined_img = gr.Image(show_label=False, interactive=False, height=180, elem_classes=["joined-img"])
+                joined_info = gr.Markdown()
+                joined_eid = gr.Textbox(visible=False)
+                joined_leave = gr.Button("빠지기", variant="stop", elem_classes=["join-btn"])
 
             gr.Markdown("### 전체 활동", elem_classes=["section-title"])
 
@@ -2030,7 +2044,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             for i in range(MAX_CARDS):
                 box = gr.Column(visible=False, elem_classes=["event-card"])
                 with box:
-                    img = gr.Image(interactive=False, elem_classes=["event-img"])
+                    img = gr.Image(show_label=False, interactive=False, height=220, elem_classes=["event-img"])
                     title_md = gr.Markdown()
                     meta_md = gr.Markdown()
                     hid = gr.Textbox(visible=False)
@@ -2044,11 +2058,11 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             msg_box = gr.Markdown()
 
         with gr.Tab("지도"):
-            joined_wrap2 = gr.Column(visible=False, elem_classes=["joined-box"])
-            joined_img2 = gr.Image(visible=True, interactive=False, elem_classes=["joined-img"])
-            joined_info2 = gr.Markdown()
-            joined_eid2 = gr.Textbox(visible=False)
-            joined_leave2 = gr.Button("빠지기", variant="stop", elem_classes=["join-btn"])
+            with gr.Column(visible=False, elem_classes=["joined-box"]) as joined_wrap2:
+                joined_img2 = gr.Image(show_label=False, interactive=False, height=180, elem_classes=["joined-img"])
+                joined_info2 = gr.Markdown()
+                joined_eid2 = gr.Textbox(visible=False)
+                joined_leave2 = gr.Button("빠지기", variant="stop", elem_classes=["join-btn"])
 
             map_html = gr.HTML(
                 "<div class='map-iframe'><iframe src='/map' loading='lazy'></iframe></div>",
@@ -2129,7 +2143,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     with img_modal:
         gr.HTML("<div class='modal-header'>사진 업로드</div>")
         with gr.Column(elem_classes=["modal-body"]):
-            img_uploader = gr.Image(label="이미지 선택", type="numpy")
+            img_uploader = gr.Image(label="이미지 선택", type="numpy", show_label=True)
         with gr.Row(elem_classes=["modal-footer"]):
             img_cancel = gr.Button("닫기", elem_classes=["btn-close"])
             img_confirm = gr.Button("확인", elem_classes=["btn-primary"])
