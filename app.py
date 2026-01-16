@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: UI_FIX_V14_SYNC_MAP_EXPLORE ###", flush=True)
+print("### DEPLOY MARKER: UI_FIX_V15_FAB_MODAL_DATE ###", flush=True)
 import os
 import io
 import re
@@ -1692,19 +1692,22 @@ a { color: inherit; }
 #fab_btn {
   position: fixed; right: 22px; bottom: 22px; z-index: 9999;
 }
-#fab_btn, #fab_btn button, button#fab_btn {
+/* Gradio 버전에 따라 id가 wrapper div 또는 button에 붙을 수 있어 둘 다 강제 스타일 */
+#fab_btn, #fab_btn button, #fab_btn .gr-button, button#fab_btn {
   width: 56px !important; height: 56px !important;
   min-width: 56px !important; max-width: 56px !important;
   padding: 0 !important;
   border-radius: 999px !important;
   background: #111 !important; color: #fff !important;
-  box-shadow: 0 10px 24px rgba(0,0,0,.22) !important;
+  border: 0 !important;
+  box-shadow: 0 12px 28px rgba(0,0,0,.28) !important;
   display: flex !important; align-items: center !important; justify-content: center !important;
   font-size: 26px !important; line-height: 1 !important;
+  cursor: pointer !important;
 }
 
 .overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  position: fixed; inset: 0; background: rgba(0,0,0,0);
   z-index: 60;
 }
 
@@ -2315,7 +2318,7 @@ a { color: inherit; }
   box-shadow: 0 10px 24px rgba(0,0,0,.22) !important;
 }
 
-.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 60; }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,0); z-index: 60; }
 .overlay2 { z-index: 80; }
 
 .main-modal { position: fixed; left:50%; top:50%; transform: translate(-50%,-50%);
@@ -2469,11 +2472,11 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
                         photo_add_btn = gr.Button('사진 업로드', variant='secondary')
                         photo_clear_btn = gr.Button('사진 제거', variant='secondary')                    # 날짜/시간 선택 (초 없음)
                     with gr.Row():
-                        start_date = gr.Textbox(label='시작 날짜', placeholder='YYYY-MM-DD', elem_id='start_date')
+                        start_date = gr.Textbox(label='시작 날짜', placeholder='YYYY-MM-DD', elem_id='start_date', lines=1, max_lines=1)
                         start_hour = gr.Dropdown(choices=HOUR_CHOICES, value='18', label='시', scale=1)
                         start_min = gr.Dropdown(choices=MIN_CHOICES, value='00', label='분', scale=1)
                     with gr.Row():
-                        end_date = gr.Textbox(label='종료 날짜(선택)', placeholder='YYYY-MM-DD', elem_id='end_date')
+                        end_date = gr.Textbox(label='종료 날짜(선택)', placeholder='YYYY-MM-DD', elem_id='end_date', lines=1, max_lines=1)
                         end_hour = gr.Dropdown(choices=HOUR_CHOICES, value='18', label='시', scale=1)
                         end_min = gr.Dropdown(choices=MIN_CHOICES, value='00', label='분', scale=1)
 
@@ -2550,8 +2553,13 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
         js="""
 () => {
   const setDateType = (id) => {
-    const el = document.querySelector(`#${id} input`);
-    if (el) {
+    // Gradio 5.x Textbox는 상황에 따라 input/textarea가 달라질 수 있어 input을 확실히 잡는다.
+    const wrap = document.getElementById(id);
+    if (!wrap) return;
+    const el = wrap.querySelector('input') || wrap.querySelector('textarea');
+    if (!el) return;
+    // textarea면 type을 줄 수 없어서, lines=1/max_lines=1로 input 렌더링되게 하고 여기선 input만 처리
+    if (el.tagName.toLowerCase() === 'input') {
       el.type = 'date';
       el.step = '1';
     }
