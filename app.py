@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: UX_FIX_V8 ###", flush=True)
+print("### DEPLOY MARKER: UI_FIX_V9 ###", flush=True)
 import os
 import io
 import re
@@ -258,6 +258,14 @@ def init_db():
                 con.execute("ALTER TABLE events ADD COLUMN is_unlimited INTEGER;")
             except Exception:
                 pass
+
+        # Fix legacy mismatch: our logic stores capacity=0 when unlimited=1.
+        # So if capacity>0 but is_unlimited=1, the flag is wrong → normalize.
+        try:
+            con.execute("UPDATE events SET is_unlimited=0 WHERE is_unlimited=1 AND capacity IS NOT NULL AND CAST(capacity AS INTEGER) > 0;")
+        except Exception:
+            pass
+
 
         # favorites
         con.execute(
@@ -1486,6 +1494,7 @@ async def map_page(request: Request):
   .iw {
     font-family:Pretendard,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
     width:260px;
+    position:relative;
   }
   .iw .img {
     width:100%;
@@ -1505,6 +1514,8 @@ async def map_page(request: Request):
     background:#111; color:#fff;
   }
   .iw button[disabled]{ background:#9ca3af; cursor:not-allowed; }
+  .iw .closebtn{position:absolute;top:8px;right:8px;width:26px;height:26px;border-radius:999px;background:rgba(0,0,0,.78);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:900;line-height:1;cursor:pointer;}
+  .iw .closebtn:hover{background:rgba(0,0,0,.88);}
 </style>
 </head>
 <body>
@@ -1522,6 +1533,11 @@ async def map_page(request: Request):
   let eventsById = new Map();
   let openIw = null;
 
+  function closeIw(){
+    if (openIw){ openIw.close(); openIw = null; }
+  }
+
+
   function esc(s) {
     return (s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
   }
@@ -1535,6 +1551,7 @@ async def map_page(request: Request):
     if (!e.joined && e.is_full) btnText = "정원마감";
     return `
       <div class="iw">
+        <div class="closebtn" onclick="closeIw()">×</div>
         ${photo}
         <h3>${esc(e.title)}</h3>
         <div class="meta">⏰ ${esc(e.start_fmt)}${remain}</div>
@@ -1736,6 +1753,11 @@ a { color: inherit; }
 # =========================================================
 # 8) Gradio UI (/app)  ※ 아래는 네 코드 그대로 유지
 # =========================================================
+
+# =========================================================
+# 8) Gradio UI (/app)
+# =========================================================
+
 def encode_img_to_b64(img_np) -> str:
     if img_np is None:
         return ""
@@ -1748,6 +1770,7 @@ def encode_img_to_b64(img_np) -> str:
     except Exception:
         return ""
 
+
 def decode_photo(photo_b64: str):
     try:
         if not photo_b64:
@@ -1757,6 +1780,21 @@ def decode_photo(photo_b64: str):
         return im
     except Exception:
         return None
+
+
+def _dt_to_store(v):
+    """Gradio DateTime/Textbox 모두 처리해서 DB에 저장할 문자열로."""
+    if v is None:
+        return ""
+    if isinstance(v, datetime):
+        dt = v
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=KST)
+        else:
+            dt = dt.astimezone(KST)
+        return dt.isoformat(timespec="minutes")
+    return str(v).strip()
+
 
 def card_md(e: dict):
     title = html.escape((e.get("title") or "").strip())
@@ -1768,6 +1806,7 @@ def card_md(e: dict):
     title_md = f"### {title}"
     meta_md = f"⏰ {start}{rem_txt}\n\n📍 {addr}\n\n👥 {cap}"
     return title_md, meta_md
+
 
 def get_joined_view(user_id: str):
     eid = get_joined_event_id(user_id)
@@ -1785,10 +1824,43 @@ def get_joined_view(user_id: str):
     info = f"**{e.get('title','')}**\n\n⏰ {start} · **{rem}**\n\n📍 {addr}\n\n👥 {cnt}/{cap_label}"
     return True, (decode_photo(e.get("photo")) if e.get("photo") else None), info, eid
 
-PAGE_SIZE = 12
-MAX_CARDS = PAGE_SIZE
 
-def _empty_refresh(page: int):
+# 홈에서 스크롤로 보여줄 카드 개수 (너무 많으면 느려져서 적당히)
+MAX_CARDS = 60
+
+
+def events_for_view(user_id: str, limit: int = MAX_CARDS):
+    # 종료된 이벤트 제외 + 최신순
+    all_events = list_active_events(limit=1200)
+    # 너무 많으면 UI가 무거워서 상한
+    chunk = all_events[:limit]
+
+    with db_conn() as con:
+        ids = [e["id"] for e in chunk]
+        counts, joined = _get_event_counts(con, ids, user_id)
+
+    my_joined_id = get_joined_event_id(user_id)
+
+    for e in chunk:
+        eid = e["id"]
+        e["count"] = counts.get(eid, 0)
+        e["joined"] = bool(joined.get(eid, False))
+        cap_label = _event_capacity_label(e.get("capacity"), e.get("is_unlimited"))
+        e["cap_label"] = cap_label
+
+        is_full = False
+        if cap_label != "∞":
+            try:
+                is_full = e["count"] >= int(cap_label)
+            except Exception:
+                is_full = False
+        e["is_full"] = is_full
+        e["can_join"] = (not is_full) and (my_joined_id is None or my_joined_id == eid)
+
+    return chunk
+
+
+def _empty_refresh():
     updates = []
     for _ in range(MAX_CARDS):
         updates.extend([
@@ -1803,25 +1875,20 @@ def _empty_refresh(page: int):
         gr.update(visible=False), gr.update(value=None), gr.update(value=""), gr.update(value=""),
         gr.update(visible=False), gr.update(value=None), gr.update(value=""), gr.update(value=""),
         *updates,
-        gr.update(value="1 / 1"),
-        gr.update(interactive=False),
-        gr.update(interactive=False),
-        gr.update(value=0),
         gr.update(value=""),
     )
 
-def refresh_view(page: int, req: gr.Request):
+
+def refresh_view(req: gr.Request):
     try:
         uid = require_user(req.request)
     except Exception:
-        return _empty_refresh(page)
-
-    # cleanup_ended_participation(uid)  # 빈번 호출에서 쓰기 발생 → 잠금/네트워크 오류 원인
+        return _empty_refresh()
 
     j_vis, j_img, j_info, j_eid = get_joined_view(uid)
     j2_vis, j2_img, j2_info, j2_eid = j_vis, j_img, j_info, j_eid
 
-    events, total_pages, my_joined_id = events_for_page(uid, max(page,0), PAGE_SIZE)
+    events = events_for_view(uid, limit=MAX_CARDS)
 
     updates = []
     for i in range(MAX_CARDS):
@@ -1854,11 +1921,6 @@ def refresh_view(page: int, req: gr.Request):
                 gr.update(value="참여하기", interactive=False),
             ])
 
-    total_pages = max(total_pages, 1)
-    page = max(0, min(page, total_pages-1))
-    page_label = f"{page+1} / {total_pages}"
-    prev_ok = page > 0
-    next_ok = page < total_pages-1
     msg = ""
 
     return (
@@ -1871,45 +1933,37 @@ def refresh_view(page: int, req: gr.Request):
         gr.update(value=j2_info),
         gr.update(value=j2_eid or ""),
         *updates,
-        gr.update(value=page_label),
-        gr.update(interactive=prev_ok),
-        gr.update(interactive=next_ok),
-        gr.update(value=page),
         gr.update(value=msg),
     )
 
-def toggle_join_and_refresh(event_id: str, page: int, req: gr.Request):
+
+def toggle_join_and_refresh(event_id: str, req: gr.Request):
     uid = require_user(req.request)
     ok, msg, _ = toggle_join(uid, (event_id or "").strip())
-    out = refresh_view(page, req)
-    out = list(out)
+    out = list(refresh_view(req))
     out[-1] = gr.update(value=msg)
     return tuple(out)
 
-def page_prev(page: int):
-    try:
-        return max(0, int(page) - 1)
-    except Exception:
-        return 0
 
-def page_next(page: int):
-    try:
-        return int(page) + 1
-    except Exception:
-        return 0
+# --------- 즐겨찾기 UI helpers ---------
 
 def my_events_for_user(user_id: str):
     with db_conn() as con:
         rows = con.execute(
-            "SELECT id, title, created_at FROM events WHERE user_id=? ORDER BY created_at DESC LIMIT 200",
+            "SELECT id, title, created_at, capacity, is_unlimited FROM events WHERE user_id=? ORDER BY created_at DESC LIMIT 200",
             (user_id,),
         ).fetchall()
-    return [f"{r[1]} ({r[0][:6]})" for r in rows]
+    out = []
+    for rid, title, created_at, cap, unlim in rows:
+        cap_label = _event_capacity_label(cap, unlim)
+        out.append(f"{title}  ·  정원 {cap_label}  ·  {created_at[:16]}  ·  ({rid[:6]})")
+    return out
+
 
 def parse_my_event_choice(choice: str | None):
     if not choice:
         return None
-    m = re.search(r"\(([0-9a-f]{6})\)$", choice.strip())
+    m = re.search(r"\(([0-9a-f]{6})\)\s*$", choice.strip())
     if not m:
         return None
     prefix = m.group(1)
@@ -1917,19 +1971,23 @@ def parse_my_event_choice(choice: str | None):
         row = con.execute("SELECT id FROM events WHERE id LIKE ? LIMIT 1", (prefix + "%",)).fetchone()
     return row[0] if row else None
 
+
 def delete_my_event(choice: str, req: gr.Request):
     uid = require_user(req.request)
     eid = parse_my_event_choice(choice)
     if not eid:
-        return gr.update(value="삭제할 이벤트를 선택해 주세요."), gr.update(choices=my_events_for_user(uid))
+        return gr.update(value="삭제할 이벤트를 선택해 주세요."), gr.update(choices=my_events_for_user(uid), value=None)
+
     with db_conn() as con:
         row = con.execute("SELECT user_id FROM events WHERE id=?", (eid,)).fetchone()
         if not row or row[0] != uid:
-            return gr.update(value="삭제 권한이 없습니다."), gr.update(choices=my_events_for_user(uid))
+            return gr.update(value="삭제 권한이 없습니다."), gr.update(choices=my_events_for_user(uid), value=None)
         con.execute("DELETE FROM events WHERE id=?", (eid,))
         con.execute("DELETE FROM event_participants WHERE event_id=?", (eid,))
         con.commit()
-    return gr.update(value="삭제 완료"), gr.update(choices=my_events_for_user(uid))
+
+    return gr.update(value="삭제 완료"), gr.update(choices=my_events_for_user(uid), value=None)
+
 
 def search_addr(keyword: str):
     docs = kakao_search(keyword, size=8)
@@ -1938,12 +1996,9 @@ def search_addr(keyword: str):
     choices = [f"{d['name']} | {d['addr']} | ({d['y']:.5f},{d['x']:.5f})" for d in docs]
     return gr.update(choices=choices), gr.update(value=f"{len(choices)}건 검색됨")
 
+
 def pick_addr(choice: str):
     if not choice:
-        # gr.State에 dict를 그대로 넣으면 Gradio가 JSON schema를 생성하는 과정에서
-        # additionalProperties=False 같은 "boolean schema"가 섞여 들어가
-        # (일부 버전에서) /app 로딩 시 api_info 생성이 500으로 터질 수 있다.
-        # 그래서 주소 선택 결과는 "문자열(JSON)"로 저장한다.
         return gr.update(value=""), gr.update(value="")
     parts = [p.strip() for p in choice.split("|")]
     if len(parts) < 3:
@@ -1956,18 +2011,84 @@ def pick_addr(choice: str):
     payload = {"addr": addr, "lat": lat, "lng": lng}
     return gr.update(value=addr), gr.update(value=json.dumps(payload, ensure_ascii=False))
 
+
 def cap_toggle(is_unlimited):
-    # None, False, 0 등을 False로, 나머지를 True로 처리
     try:
         is_unlimited_bool = bool(is_unlimited)
-    except:
+    except Exception:
         is_unlimited_bool = False
-    
     return gr.update(interactive=not is_unlimited_bool)
 
-def close_modal():
-    # 메인 모달 + 오버레이 닫기
+
+def close_main_modal():
     return gr.update(visible=False), gr.update(visible=False), False
+
+
+def open_main_modal(req: gr.Request):
+    uid = require_user(req.request)
+    favs = get_top_favs(10)
+
+    # fav 버튼 세팅
+    fav_btn_updates = []
+    for i in range(10):
+        if i < len(favs):
+            name = favs[i]["name"]
+            fav_btn_updates.extend([
+                gr.update(value=f"⭐ {name}", visible=True),
+                gr.update(value="−", visible=True, interactive=True),
+                gr.update(value=name),
+            ])
+        else:
+            fav_btn_updates.extend([
+                gr.update(value="", visible=False),
+                gr.update(value="−", visible=False, interactive=False),
+                gr.update(value=""),
+            ])
+
+    # 모달 오픈 시: 이전 입력값들 초기화(무한 정원 꼬임 방지)
+    return (
+        gr.update(visible=True),  # overlay
+        gr.update(visible=True),  # main_modal
+        *fav_btn_updates,
+        gr.update(choices=my_events_for_user(uid), value=None),
+        gr.update(value=""),  # fav_msg
+        gr.update(value=""),  # del_msg
+        gr.update(value=None),  # photo_preview
+        gr.update(value=""),  # title
+        gr.update(value=None),  # start
+        gr.update(value=None),  # end
+        gr.update(value=10, interactive=True),  # cap_slider
+        gr.update(value=False),  # cap_unlimited
+        gr.update(value=""),  # addr_text
+        gr.update(value=""),  # picked_addr
+        gr.update(value=""),  # save_msg
+        True,
+    )
+
+
+def select_fav(name: str):
+    name = (name or "").strip()
+    if name.startswith("⭐"):
+        name = name.replace("⭐", "").strip()
+    bump_fav(name)
+    return gr.update(value=name)
+
+
+def add_fav(new_name: str):
+    new_name = (new_name or "").strip()
+    if not new_name:
+        favs = get_top_favs(10)
+        return gr.update(value="이름을 입력해 주세요."), *fav_updates(favs)
+    bump_fav(new_name)
+    favs = get_top_favs(10)
+    return gr.update(value="추가 완료"), *fav_updates(favs)
+
+
+def delete_fav_click(name: str):
+    delete_fav(name)
+    favs = get_top_favs(10)
+    return gr.update(value="삭제 완료"), *fav_updates(favs)
+
 
 def fav_updates(favs):
     out = []
@@ -1983,113 +2104,94 @@ def fav_updates(favs):
             out.append(gr.update(value=""))
     return tuple(out)
 
-def open_modal(req: gr.Request):
-    uid = require_user(req.request)
-    favs = get_top_favs(10)
-    return (
-        gr.update(visible=True),
-        gr.update(visible=True),
-        *fav_updates(favs),
-        gr.update(choices=my_events_for_user(uid)),
-        gr.update(value=""),
-        gr.update(value=""),
-        gr.update(value=None),
-        True,
-    )
 
-def select_fav(name: str):
-    name = (name or "").strip()
-    if name.startswith("⭐"):
-        name = name.replace("⭐", "").strip()
-    bump_fav(name)
-    return gr.update(value=name)
+# ---- 사진 업로드 모달 ----
 
-def add_fav(new_name: str):
-    new_name = (new_name or "").strip()
-    if not new_name:
-        return gr.update(value="이름을 입력해 주세요."), *fav_updates(get_top_favs(10))
-    bump_fav(new_name)
-    return gr.update(value="추가 완료"), *fav_updates(get_top_favs(10))
+def open_img_modal():
+    return gr.update(visible=True)
 
-def delete_fav_click(name: str):
-    delete_fav(name)
-    return gr.update(value="삭제 완료"), *fav_updates(get_top_favs(10))
 
-def open_img_modal(main_open: bool):
-    # 사진 업로드 모달을 열 때 배경 오버레이도 함께 켠다
-    return gr.update(visible=True), gr.update(visible=True), bool(main_open)
+def close_img_modal():
+    return gr.update(visible=False)
 
-def close_img_modal(main_open: bool):
-    # 업로드 모달 닫기: 메인 모달이 열려있으면 오버레이 유지, 아니면 오버레이도 닫기
-    return gr.update(visible=bool(main_open)), gr.update(visible=False), bool(main_open)
 
-def confirm_img(img_np, main_open: bool):
-    # 업로드 모달 닫고 미리보기 업데이트
-    return (
-        gr.update(visible=bool(main_open)),
-        gr.update(visible=False),
-        gr.update(value=img_np),
-        bool(main_open),
-    )
+def confirm_img(img_np):
+    return gr.update(visible=False), gr.update(value=img_np)
+
+
+# ---- 장소 검색(서브 모달) ----
+
+def open_place_modal():
+    return gr.update(visible=True), gr.update(visible=True), gr.update(value=""), gr.update(choices=[]), gr.update(value="")
+
+
+def close_place_modal():
+    return gr.update(visible=False), gr.update(visible=False)
+
+
+def confirm_place(addr_preview: str, picked_json: str):
+    return gr.update(value=addr_preview), gr.update(value=picked_json), gr.update(visible=False), gr.update(visible=False)
+
 
 def save_event(
     title: str,
     img_np,
-    start: str,
-    end: str,
+    start_v,
+    end_v,
     addr_text: str,
     picked_addr,
-    capacity: int,
-    unlimited: bool,
-    req: gr.Request
+    capacity,
+    unlimited,
+    req: gr.Request,
 ):
     uid = require_user(req.request)
     title = (title or "").strip()
     if not title:
-        return gr.update(value="이벤트명을 입력해 주세요."), *close_modal()
+        return gr.update(value="이벤트명을 입력해 주세요."), gr.update(visible=True), gr.update(visible=True), True
 
     addr = (addr_text or "").strip()
-    # pick_addr()에서 State에는 dict가 아니라 JSON 문자열을 저장한다.
-    # (Gradio api_info 생성 시 boolean-schema 이슈 회피)
+
+    # picked_addr는 JSON 문자열
     lat = None
     lng = None
     picked = None
     if picked_addr:
-        if isinstance(picked_addr, dict):
-            # 혹시 이전 데이터/호환 케이스
-            picked = picked_addr
-        else:
-            try:
-                picked = json.loads(str(picked_addr))
-            except Exception:
-                picked = None
+        try:
+            picked = json.loads(str(picked_addr))
+        except Exception:
+            picked = None
 
     if picked and isinstance(picked, dict):
         addr = picked.get("addr") or addr
         lat = picked.get("lat")
         lng = picked.get("lng")
 
-    # 사용자가 검색 결과를 선택하지 않고 주소만 입력한 경우 lat/lng가 비어있을 수 있음 → geocode로 보강
+    if not addr:
+        return gr.update(value="장소를 선택해 주세요."), gr.update(visible=True), gr.update(visible=True), True
+
+    # 좌표가 없으면 geocode로 보강
     if (lat is None or lng is None) and addr:
         got = kakao_geocode(addr)
         if got:
             lat, lng = got
 
-    if not addr:
-        return gr.update(value="장소를 선택해 주세요."), *close_modal()
+    start_s = _dt_to_store(start_v)
+    end_s = _dt_to_store(end_v)
 
-    sdt = parse_dt(start)
-    edt = parse_dt(end)
+    sdt = parse_dt(start_s)
+    edt = parse_dt(end_s)
     if sdt and edt and edt <= sdt:
-        return gr.update(value="종료일시는 시작일시 이후여야 합니다."), *close_modal()
+        return gr.update(value="종료일시는 시작일시 이후여야 합니다."), gr.update(visible=True), gr.update(visible=True), True
 
     photo_b64 = encode_img_to_b64(img_np)
 
-    cap_val = 0
-    is_unlim = 1 if unlimited else 0
-    if not unlimited:
+    # 정원
+    is_unlim = 1 if bool(unlimited) else 0
+    if is_unlim:
+        cap_val = 0
+    else:
         try:
-            cap_val = int(capacity)
+            cap_val = int(float(capacity))
             cap_val = max(1, min(99, cap_val))
         except Exception:
             cap_val = 10
@@ -2101,253 +2203,328 @@ def save_event(
             INSERT INTO events(id,title,photo,start,end,addr,lat,lng,created_at,user_id,capacity,is_unlimited)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             """,
-            (eid, title, photo_b64, (start or "").strip(), (end or "").strip(), addr, lat, lng, now_kst().isoformat(), uid, cap_val, is_unlim),
+            (eid, title, photo_b64, start_s, end_s, addr, lat, lng, now_kst().isoformat(), uid, cap_val, is_unlim),
         )
         con.commit()
 
     bump_fav(title)
-    return gr.update(value="등록 완료"), *close_modal()
+    return gr.update(value="등록 완료"), gr.update(visible=False), gr.update(visible=False), False
 
 
-# -------------------------
+# =========================================================
 # Gradio UI 정의
-# -------------------------
-with gr.Blocks(css=CSS, title="오세요") as demo:
-    js_hook = gr.Textbox(visible=False, elem_id="js_hook")
+# =========================================================
 
-    with gr.Row(elem_classes=["header"]):
+CSS = r"""
+:root {
+  --bg:#FAF9F6; --ink:#1F2937; --muted:#6B7280; --line:#E5E3DD; --accent:#111;
+  --card:#ffffffcc; --danger:#ef4444;
+}
+
+html, body, .gradio-container { background: var(--bg) !important; }
+.gradio-container { width:100% !important; max-width:1100px !important; margin:0 auto !important; }
+
+a { color: inherit; }
+
+.header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-top:8px; }
+.header h1 { font-size:26px; margin:0; }
+.header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+
+.logout a { text-decoration:none; color: var(--muted); font-size:13px; }
+
+.section-title { font-weight:800; margin: 12px 0 6px; }
+.helper { color: var(--muted); font-size:12px; margin: 0 0 10px; }
+
+/* Floating + */
+.fab-wrap { position:fixed; right:22px; bottom:22px; z-index:50; }
+#fab_btn { width:56px !important; height:56px !important; min-width:56px !important; border-radius:999px !important; padding:0 !important; }
+#fab_btn button, #fab_btn .gr-button { width:56px !important; height:56px !important; border-radius:999px !important; background:#111 !important; color:#fff !important; font-size:26px !important; box-shadow: 0 10px 24px rgba(0,0,0,.22) !important; }
+
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 60; }
+.overlay2 { z-index: 80; }
+
+.main-modal { position: fixed; left:50%; top:50%; transform: translate(-50%,-50%);
+  width: min(520px, calc(100vw - 20px));
+  height: min(760px, calc(100vh - 20px));
+  background: #fff; border-radius: 18px; border: 1px solid var(--line);
+  box-shadow: 0 18px 60px rgba(0,0,0,.25);
+  z-index: 70; overflow:hidden;
+}
+
+.sub-modal { position: fixed; left:50%; top:50%; transform: translate(-50%,-50%);
+  width: min(520px, calc(100vw - 20px));
+  height: min(560px, calc(100vh - 20px));
+  background: #fff; border-radius: 18px; border: 1px solid var(--line);
+  box-shadow: 0 18px 60px rgba(0,0,0,.25);
+  z-index: 90; overflow:hidden;
+}
+
+.modal-header { padding: 16px 18px; border-bottom: 1px solid var(--line); font-weight:800; text-align:center; }
+.modal-body { padding: 14px 16px; overflow-y:auto; height: calc(100% - 110px); }
+.modal-footer { padding: 12px 16px; border-top: 1px solid var(--line); display:flex; gap:10px; }
+.modal-footer .btn-close button { background:#eee !important; color:#111 !important; border-radius:12px !important; }
+.modal-footer .btn-primary button { background:#111 !important; color:#fff !important; border-radius:12px !important; }
+.modal-footer .btn-danger button { background: var(--danger) !important; color:#fff !important; border-radius:12px !important; }
+
+.note { color: var(--muted); font-size:12px; line-height:1.4; white-space: normal; }
+
+/* Favorites: delete button as small circle on top-right */
+.fav-grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top: 6px; }
+.fav-box { position:relative; }
+.fav-box .fav-main button { width:100% !important; border-radius:12px !important; background:#f3f4f6 !important; color:#111 !important; border:1px solid #e5e7eb !important; }
+.fav-box .fav-del button { position:absolute !important; top:6px !important; right:6px !important;
+  width:22px !important; height:22px !important; min-width:22px !important; padding:0 !important;
+  border-radius:999px !important; background:#fff !important; border:1px solid #e5e7eb !important;
+  color:#b91c1c !important; font-weight:900 !important; line-height:1 !important;
+}
+.fav-box .fav-del button:hover { background:#fee2e2 !important; border-color:#fecaca !important; }
+
+/* Events scroll list */
+.events-scroll { max-height: 72vh; overflow-y:auto; padding-right: 6px; }
+
+.event-card { background: rgba(255,255,255,.7); border:1px solid var(--line); border-radius:18px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06); margin-bottom:12px; }
+.event-img img { width:100% !important; border-radius:16px !important; object-fit:cover !important; height:220px !important; }
+@media (min-width: 900px) { .event-img img { height:180px !important; } }
+
+.join-btn button { border-radius:999px !important; background:#111 !important; color:#fff !important; font-weight:800 !important; }
+.join-btn button[disabled] { background:#9ca3af !important; }
+
+.joined-box { background: rgba(255,255,255,.8); border:1px solid var(--line); border-radius:18px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
+.joined-img img { width:100% !important; border-radius:16px !important; object-fit:cover !important; height:180px !important; }
+
+.map-iframe iframe { width:100%; height: 70vh; min-height:520px; border:0; border-radius:18px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
+"""
+
+# DateTime picker if available
+DateTimeComp = getattr(gr, 'DateTime', None)
+
+with gr.Blocks(css=CSS, title='오세요') as demo:
+    with gr.Row(elem_classes=['header']):
         with gr.Column(scale=8):
-            gr.Markdown("## 지금, 열려 있습니다")
+            gr.Markdown('## 지금, 열려 있습니다')
             gr.Markdown("<span style='color:#6b7280;font-size:13px'>편하면 오셔도 됩니다</span>")
-        with gr.Column(scale=2, elem_classes=["logout"]):
+        with gr.Column(scale=2, elem_classes=['logout']):
             gr.HTML("<div style='text-align:right'><a href='/logout'>로그아웃</a></div>")
 
     tabs = gr.Tabs()
-    page_state = gr.State(0)
 
     with tabs:
-        with gr.Tab("탐색"):
-            gr.Markdown("### 열려 있는 활동", elem_classes=["section-title"])
-            gr.Markdown("참여하기는 1개 활동만 가능하다. 다른 활동에 참여하려면 먼저 빠지기를 해야 한다.", elem_classes=["helper"])
-            with gr.Column(visible=False, elem_classes=["joined-box"]) as joined_wrap:
-                joined_img = gr.Image(show_label=False, interactive=False, height=180, elem_classes=["joined-img"])
+        with gr.Tab('탐색'):
+            gr.Markdown('### 열려 있는 활동', elem_classes=['section-title'])
+            gr.Markdown('참여하기는 1개 활동만 가능하다. 다른 활동에 참여하려면 먼저 빠지기를 해야 한다.', elem_classes=['helper'])
+
+            joined_wrap = gr.Column(visible=False, elem_classes=['joined-box'])
+            with joined_wrap:
+                joined_img = gr.Image(visible=True, interactive=False, elem_classes=['joined-img'])
                 joined_info = gr.Markdown()
                 joined_eid = gr.Textbox(visible=False)
-                joined_leave = gr.Button("빠지기", variant="stop", elem_classes=["join-btn"])
+                joined_leave = gr.Button('빠지기', variant='stop', elem_classes=['join-btn'])
 
-            gr.Markdown("### 전체 활동", elem_classes=["section-title"])
+            gr.Markdown('### 전체 활동', elem_classes=['section-title'])
 
-            cards = []
-            card_imgs = []
-            card_titles = []
-            card_metas = []
-            card_ids = []
-            card_btns = []
+            cards_wrap = gr.Column(elem_classes=['events-scroll'])
+            cards = []; card_imgs=[]; card_titles=[]; card_metas=[]; card_ids=[]; card_btns=[]
+            with cards_wrap:
+                for i in range(MAX_CARDS):
+                    box = gr.Column(visible=False, elem_classes=['event-card'])
+                    with box:
+                        img = gr.Image(interactive=False, elem_classes=['event-img'])
+                        title_md = gr.Markdown()
+                        meta_md = gr.Markdown()
+                        hid = gr.Textbox(visible=False)
+                        btn = gr.Button('참여하기', elem_classes=['join-btn'])
+                    cards.append(box); card_imgs.append(img); card_titles.append(title_md); card_metas.append(meta_md); card_ids.append(hid); card_btns.append(btn)
 
-            for i in range(MAX_CARDS):
-                box = gr.Column(visible=False, elem_classes=["event-card"])
-                with box:
-                    img = gr.Image(show_label=False, interactive=False, height=220, elem_classes=["event-img"])
-                    title_md = gr.Markdown()
-                    meta_md = gr.Markdown()
-                    hid = gr.Textbox(visible=False)
-                    btn = gr.Button("참여하기", elem_classes=["join-btn"])
-                cards.append(box); card_imgs.append(img); card_titles.append(title_md); card_metas.append(meta_md); card_ids.append(hid); card_btns.append(btn)
-
-            with gr.Row():
-                prev_btn = gr.Button("이전")
-                page_label = gr.Markdown("1 / 1")
-                next_btn = gr.Button("다음")
             msg_box = gr.Markdown()
 
-        with gr.Tab("지도"):
-            with gr.Column(visible=False, elem_classes=["joined-box"]) as joined_wrap2:
-                joined_img2 = gr.Image(show_label=False, interactive=False, height=180, elem_classes=["joined-img"])
+        with gr.Tab('지도'):
+            joined_wrap2 = gr.Column(visible=False, elem_classes=['joined-box'])
+            with joined_wrap2:
+                joined_img2 = gr.Image(visible=True, interactive=False, elem_classes=['joined-img'])
                 joined_info2 = gr.Markdown()
                 joined_eid2 = gr.Textbox(visible=False)
-                joined_leave2 = gr.Button("빠지기", variant="stop", elem_classes=["join-btn"])
+                joined_leave2 = gr.Button('빠지기', variant='stop', elem_classes=['join-btn'])
 
-            map_html = gr.HTML(
-                "<div class='map-iframe'><iframe src='/map' loading='lazy'></iframe></div>",
-                elem_classes=["map-iframe"]
-            )
+            map_html = gr.HTML("<div class='map-iframe'><iframe src='/map' loading='lazy'></iframe></div>", elem_classes=['map-iframe'])
 
-    # Floating action button (원형 + 버튼)
-    fab = gr.Button("+", elem_id="fab_btn")
+    # Floating action button
+    with gr.Row(elem_classes=['fab-wrap']):
+        fab = gr.Button('+', elem_id='fab_btn')
 
-    overlay = gr.HTML("<div class='overlay'></div>", visible=False, elem_classes=["overlay"])
+    overlay = gr.HTML("<div class='overlay'></div>", visible=False, elem_classes=['overlay'])
+    overlay2 = gr.HTML("<div class='overlay overlay2'></div>", visible=False, elem_classes=['overlay','overlay2'])
+
     main_open = gr.State(False)
 
-    main_modal = gr.Column(visible=False, elem_classes=["main-modal"], elem_id="main_modal")
+    # --- Main create modal ---
+    main_modal = gr.Column(visible=False, elem_classes=['main-modal'], elem_id='main_modal')
     with main_modal:
-        gr.HTML("<div class='modal-header'>새 이벤트 만들기</div>", elem_classes=["modal-header"])
-        with gr.Column(elem_classes=["modal-body"]):
+        gr.HTML("<div class='modal-header'>새 이벤트 만들기</div>", elem_classes=['modal-header'])
+        with gr.Column(elem_classes=['modal-body']):
             with gr.Tabs():
-                with gr.Tab("작성하기"):
-                    gr.Markdown("#### ⭐ 자주하는 활동")
-                    gr.HTML("<div class=\"note\">버튼을 누르면 이벤트명에 바로 입력됩니다.</div>")
+                with gr.Tab('작성하기'):
+                    gr.Markdown('#### ⭐ 자주하는 활동')
+                    gr.HTML("<div class='note'>버튼을 누르면 이벤트명에 바로 입력됩니다.</div>")
 
-                    fav_select_btns = []
-                    fav_del_btns = []
-                    fav_hidden_names = []
-
-                    with gr.Column(elem_classes=["fav-grid"]):
+                    fav_select_btns=[]; fav_del_btns=[]; fav_hidden_names=[]
+                    with gr.Column(elem_classes=['fav-grid']):
                         for i in range(10):
-                            with gr.Row(elem_classes=["fav-item"]):
-                                b_main = gr.Button("", visible=False, elem_classes=["fav-main"])
-                                b_del = gr.Button("−", visible=False, elem_classes=["fav-del"])
+                            with gr.Column(elem_classes=['fav-box']):
+                                b_main = gr.Button('', visible=False, elem_classes=['fav-main'])
+                                b_del = gr.Button('−', visible=False, elem_classes=['fav-del'])
                                 h_name = gr.Textbox(visible=False)
                             fav_select_btns.append(b_main)
                             fav_del_btns.append(b_del)
                             fav_hidden_names.append(h_name)
 
                     with gr.Row():
-                        new_fav = gr.Textbox(placeholder="즐겨찾기 추가", scale=2)
-                        fav_add_btn = gr.Button("추가", scale=1)
+                        new_fav = gr.Textbox(placeholder='즐겨찾기 추가', scale=2)
+                        fav_add_btn = gr.Button('추가', scale=1)
                     fav_msg = gr.Markdown()
 
-                    title = gr.Textbox(label="이벤트명", placeholder="예: 30분 산책, 조용히 책 읽기")
+                    title = gr.Textbox(label='이벤트명', placeholder='예: 30분 산책, 조용히 책 읽기')
+
+                    photo_preview = gr.Image(label='사진(미리보기)', interactive=False, height=160)
+                    with gr.Row():
+                        photo_add_btn = gr.Button('사진 업로드', variant='secondary')
+                        photo_clear_btn = gr.Button('사진 제거', variant='secondary')
+
+                    # DateTime pickers
+                    if DateTimeComp is not None:
+                        start = DateTimeComp(label='시작 일시')
+                        end = DateTimeComp(label='종료 일시(선택)')
+                    else:
+                        start = gr.Textbox(label='시작 일시', placeholder='예: 2026-01-12 18:00')
+                        end = gr.Textbox(label='종료 일시', placeholder='예: 2026-01-12 20:00 (선택)')
 
                     with gr.Row():
-                        photo_preview = gr.Image(label="사진(미리보기)", interactive=False, height=160)
+                        cap_slider = gr.Slider(1, 99, value=10, step=1, label='정원(1~99)')
+                        cap_unlimited = gr.Checkbox(label='제한없음', value=False)
+
+                    gr.Markdown('#### 장소')
                     with gr.Row():
-                        photo_add_btn = gr.Button("사진 업로드", variant="secondary")
-                        photo_clear_btn = gr.Button("사진 제거", variant="secondary")
+                        addr_text = gr.Textbox(label='선택된 장소', placeholder='장소 검색으로 선택해 주세요.', scale=3)
+                        place_open_btn = gr.Button('장소 검색', variant='secondary', scale=1)
 
-                    start = gr.Textbox(label="시작 일시", placeholder="예: 2026-01-12 18:00")
-                    end = gr.Textbox(label="종료 일시", placeholder="예: 2026-01-12 20:00 (선택)")
-
-                    with gr.Row():
-                        cap_slider = gr.Slider(1, 99, value=10, step=1, label="정원(1~99)")
-                        cap_unlimited = gr.Checkbox(label="제한없음", value=False)
-
-                    gr.Markdown("#### 장소")
-                    with gr.Row():
-                        addr_kw = gr.Textbox(placeholder="장소 검색어 (예: 영일대, 카페, 도서관)", scale=2)
-                        addr_search_btn = gr.Button("검색", scale=1)
-                    addr_choices = gr.Dropdown(label="검색 결과 선택", choices=[])
-                    addr_status = gr.Markdown()
-                    addr_text = gr.Textbox(label="선택된 장소", placeholder="검색 후 선택하면 자동 입력")
-                    # 주소(위경도) 선택 결과는 dict가 아니라 JSON 문자열로 보관
-                    # (Gradio api_info 생성 시 boolean-schema 이슈 회피)
-                    picked_addr = gr.State("")
-
+                    picked_addr = gr.State('')
                     save_msg = gr.Markdown()
 
-                with gr.Tab("내 글 관리"):
-                    my_list = gr.Dropdown(label="내가 만든 이벤트", choices=[])
-                    del_btn = gr.Button("삭제", variant="stop")
+                with gr.Tab('내 글 관리'):
+                    my_list = gr.Radio(label='내가 만든 이벤트', choices=[], value=None)
+                    del_btn = gr.Button('삭제', variant='stop')
                     del_msg = gr.Markdown()
 
-        with gr.Row(elem_classes=["modal-footer"]):
-            close_btn = gr.Button("닫기", elem_classes=["btn-close"])
-            create_btn = gr.Button("등록하기", elem_classes=["btn-primary"])
+        with gr.Row(elem_classes=['modal-footer']):
+            close_btn = gr.Button('닫기', elem_classes=['btn-close'])
+            create_btn = gr.Button('등록하기', elem_classes=['btn-primary'])
 
-    img_modal = gr.Column(visible=False, elem_classes=["main-modal"], elem_id="img_modal")
+    # --- Photo modal ---
+    img_modal = gr.Column(visible=False, elem_classes=['sub-modal'], elem_id='img_modal')
     with img_modal:
         gr.HTML("<div class='modal-header'>사진 업로드</div>")
-        with gr.Column(elem_classes=["modal-body"]):
-            img_uploader = gr.Image(label="이미지 선택", type="numpy", show_label=True)
-        with gr.Row(elem_classes=["modal-footer"]):
-            img_cancel = gr.Button("닫기", elem_classes=["btn-close"])
-            img_confirm = gr.Button("확인", elem_classes=["btn-primary"])
+        with gr.Column(elem_classes=['modal-body']):
+            img_uploader = gr.Image(label='이미지 선택', type='numpy')
+        with gr.Row(elem_classes=['modal-footer']):
+            img_cancel = gr.Button('닫기', elem_classes=['btn-close'])
+            img_confirm = gr.Button('확인', elem_classes=['btn-primary'])
 
-    sync_btn = gr.Button("sync", visible=False, elem_id="sync_btn")
+    # --- Place search sub-modal ---
+    place_modal = gr.Column(visible=False, elem_classes=['sub-modal'], elem_id='place_modal')
+    with place_modal:
+        gr.HTML("<div class='modal-header'>장소 검색</div>")
+        with gr.Column(elem_classes=['modal-body']):
+            addr_kw = gr.Textbox(label='검색어', placeholder='예: 영일대, 카페, 도서관')
+            addr_search_btn = gr.Button('검색')
+            addr_choices = gr.Dropdown(label='검색 결과', choices=[])
+            addr_status = gr.Markdown()
+            addr_preview = gr.Textbox(label='선택된 장소', interactive=False)
+            picked_tmp = gr.State('')
+        with gr.Row(elem_classes=['modal-footer']):
+            place_cancel = gr.Button('닫기', elem_classes=['btn-close'])
+            place_confirm = gr.Button('선택', elem_classes=['btn-primary'])
 
-    # 로그인/리다이렉트 직후 브라우저 상태에 따라 모달이 어중간하게 열려 보이는 경우가 있어
-    # 첫 로드시 모달들을 항상 닫아 초기 상태를 강제로 맞춘다.
-    def _reset_modals_on_load():
-        return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), False
+    # --- 초기 상태 강제 ---
+    def _reset_on_load():
+        return (
+            gr.update(visible=False), gr.update(visible=False),
+            gr.update(visible=False), gr.update(visible=False),
+            gr.update(visible=False), gr.update(visible=False),
+            False,
+        )
 
     demo.load(
-        fn=_reset_modals_on_load,
+        fn=_reset_on_load,
         inputs=None,
-        outputs=[overlay, main_modal, img_modal, main_open],
+        outputs=[overlay, main_modal, overlay2, place_modal, overlay2, img_modal, main_open],
     )
-    # (자동 sync 제거) 지도에서 postMessage로 부모를 새로고침하면 로딩이 반복돼서 제거
 
+    # --- 이벤트 뷰 로드 ---
     demo.load(
         fn=refresh_view,
-        inputs=[page_state],
+        inputs=None,
         outputs=[
             joined_wrap, joined_img, joined_info, joined_eid,
             joined_wrap2, joined_img2, joined_info2, joined_eid2,
             *sum([[cards[i], card_imgs[i], card_titles[i], card_metas[i], card_ids[i], card_btns[i]] for i in range(MAX_CARDS)], []),
-            page_label, prev_btn, next_btn, page_state, msg_box
+            msg_box,
         ],
     )
-    # sync_btn.click 제거(자동 로딩 방지)
 
+    # --- 카드/참여 버튼 ---
     for i in range(MAX_CARDS):
         card_btns[i].click(
             fn=toggle_join_and_refresh,
-            inputs=[card_ids[i], page_state],
+            inputs=[card_ids[i]],
             outputs=[
                 joined_wrap, joined_img, joined_info, joined_eid,
                 joined_wrap2, joined_img2, joined_info2, joined_eid2,
                 *sum([[cards[j], card_imgs[j], card_titles[j], card_metas[j], card_ids[j], card_btns[j]] for j in range(MAX_CARDS)], []),
-                page_label, prev_btn, next_btn, page_state, msg_box
+                msg_box,
             ],
         )
 
     joined_leave.click(
         fn=toggle_join_and_refresh,
-        inputs=[joined_eid, page_state],
+        inputs=[joined_eid],
         outputs=[
             joined_wrap, joined_img, joined_info, joined_eid,
             joined_wrap2, joined_img2, joined_info2, joined_eid2,
             *sum([[cards[j], card_imgs[j], card_titles[j], card_metas[j], card_ids[j], card_btns[j]] for j in range(MAX_CARDS)], []),
-            page_label, prev_btn, next_btn, page_state, msg_box
+            msg_box,
         ],
     )
+
     joined_leave2.click(
         fn=toggle_join_and_refresh,
-        inputs=[joined_eid2, page_state],
+        inputs=[joined_eid2],
         outputs=[
             joined_wrap, joined_img, joined_info, joined_eid,
             joined_wrap2, joined_img2, joined_info2, joined_eid2,
             *sum([[cards[j], card_imgs[j], card_titles[j], card_metas[j], card_ids[j], card_btns[j]] for j in range(MAX_CARDS)], []),
-            page_label, prev_btn, next_btn, page_state, msg_box
+            msg_box,
         ],
     )
 
-    prev_btn.click(fn=page_prev, inputs=[page_state], outputs=[page_state]).then(
-        fn=refresh_view,
-        inputs=[page_state],
-        outputs=[
-            joined_wrap, joined_img, joined_info, joined_eid,
-            joined_wrap2, joined_img2, joined_info2, joined_eid2,
-            *sum([[cards[i], card_imgs[i], card_titles[i], card_metas[i], card_ids[i], card_btns[i]] for i in range(MAX_CARDS)], []),
-            page_label, prev_btn, next_btn, page_state, msg_box
-        ],
-    )
-    next_btn.click(fn=page_next, inputs=[page_state], outputs=[page_state]).then(
-        fn=refresh_view,
-        inputs=[page_state],
-        outputs=[
-            joined_wrap, joined_img, joined_info, joined_eid,
-            joined_wrap2, joined_img2, joined_info2, joined_eid2,
-            *sum([[cards[i], card_imgs[i], card_titles[i], card_metas[i], card_ids[i], card_btns[i]] for i in range(MAX_CARDS)], []),
-            page_label, prev_btn, next_btn, page_state, msg_box
-        ],
-    )
-
+    # --- 메인 모달 열기/닫기 ---
     fab.click(
-        fn=open_modal,
+        fn=open_main_modal,
         inputs=None,
         outputs=[
             overlay, main_modal,
             *sum([[fav_select_btns[i], fav_del_btns[i], fav_hidden_names[i]] for i in range(10)], []),
             my_list,
-            fav_msg,
-            del_msg,
+            fav_msg, del_msg,
             photo_preview,
-            main_open
+            title, start, end, cap_slider, cap_unlimited,
+            addr_text, picked_addr,
+            save_msg,
+            main_open,
         ],
     )
 
-    close_btn.click(fn=close_modal, inputs=None, outputs=[overlay, main_modal, main_open])
+    close_btn.click(fn=close_main_modal, inputs=None, outputs=[overlay, main_modal, main_open])
 
+    # 즐겨찾기 선택/삭제
     for i in range(10):
         fav_select_btns[i].click(fn=select_fav, inputs=[fav_hidden_names[i]], outputs=[title])
         fav_del_btns[i].click(
@@ -2364,39 +2541,51 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
 
     cap_unlimited.change(fn=cap_toggle, inputs=[cap_unlimited], outputs=[cap_slider])
 
-    addr_search_btn.click(fn=search_addr, inputs=[addr_kw], outputs=[addr_choices, addr_status])
-    addr_choices.change(fn=pick_addr, inputs=[addr_choices], outputs=[addr_text, picked_addr])
-
-    photo_add_btn.click(fn=open_img_modal, inputs=[main_open], outputs=[overlay, img_modal, main_open])
-    img_cancel.click(fn=close_img_modal, inputs=[main_open], outputs=[overlay, img_modal, main_open])
-    img_confirm.click(fn=confirm_img, inputs=[img_uploader, main_open], outputs=[overlay, img_modal, photo_preview, main_open])
+    # 사진 업로드
+    photo_add_btn.click(fn=lambda: (gr.update(visible=True), gr.update(visible=True)), inputs=None, outputs=[overlay2, img_modal])
+    img_cancel.click(fn=lambda: (gr.update(visible=False), gr.update(visible=False)), inputs=None, outputs=[overlay2, img_modal])
+    img_confirm.click(fn=confirm_img, inputs=[img_uploader], outputs=[img_modal, photo_preview]).then(
+        fn=lambda: gr.update(visible=False), inputs=None, outputs=[overlay2]
+    )
     photo_clear_btn.click(fn=lambda: None, inputs=None, outputs=[photo_preview])
 
+    # 장소 검색 서브모달
+    place_open_btn.click(
+        fn=open_place_modal,
+        inputs=None,
+        outputs=[overlay2, place_modal, addr_kw, addr_choices, addr_status],
+    )
+    place_cancel.click(fn=close_place_modal, inputs=None, outputs=[overlay2, place_modal])
+
+    addr_search_btn.click(fn=search_addr, inputs=[addr_kw], outputs=[addr_choices, addr_status])
+    addr_choices.change(fn=pick_addr, inputs=[addr_choices], outputs=[addr_preview, picked_tmp])
+
+    place_confirm.click(
+        fn=confirm_place,
+        inputs=[addr_preview, picked_tmp],
+        outputs=[addr_text, picked_addr, overlay2, place_modal],
+    )
+
+    # 내 글 삭제
     del_btn.click(fn=delete_my_event, inputs=[my_list], outputs=[del_msg, my_list])
 
+    # 등록
     create_btn.click(
         fn=save_event,
         inputs=[title, photo_preview, start, end, addr_text, picked_addr, cap_slider, cap_unlimited],
         outputs=[save_msg, overlay, main_modal, main_open],
     ).then(
         fn=refresh_view,
-        inputs=[page_state],
+        inputs=None,
         outputs=[
             joined_wrap, joined_img, joined_info, joined_eid,
             joined_wrap2, joined_img2, joined_info2, joined_eid2,
             *sum([[cards[i], card_imgs[i], card_titles[i], card_metas[i], card_ids[i], card_btns[i]] for i in range(MAX_CARDS)], []),
-            page_label, prev_btn, next_btn, page_state, msg_box
+            msg_box,
         ],
     )
 
-app = gr.mount_gradio_app(app, demo, path="/app", show_api=False)
+app = gr.mount_gradio_app(app, demo, path='/app', show_api=False)
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
-
-
-
-
-
-
-
+if __name__ == '__main__':
+    uvicorn.run(app, host='0.0.0.0', port=int(os.getenv('PORT','8000')))
