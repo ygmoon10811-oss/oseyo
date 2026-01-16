@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: UI_FIX_V5 ###", flush=True)
+print("### DEPLOY MARKER: UI_FIX_V6 ###", flush=True)
 import os
 import io
 import re
@@ -1576,11 +1576,24 @@ a { color: inherit; }
 .section-title { font-weight:800; margin: 12px 0 6px; }
 .helper { color: var(--muted); font-size:12px; margin: 0 0 10px; }
 
-.fab-wrap { position:fixed; right:22px; bottom:22px; z-index:50; }
-.fab-btn button {
-  width:56px !important; height:56px !important; border-radius:999px !important;
-  background:#111 !important; color:#fff !important; font-size:22px !important;
+#fab_btn {
+  position: fixed; right: 22px; bottom: 22px; z-index: 50;
+  width: 56px; height: 56px;
+}
+#fab_btn button {
+  width: 56px !important; height: 56px !important;
+  min-width: 56px !important; max-width: 56px !important;
+  padding: 0 !important;
+  border-radius: 999px !important;
+  background: #111 !important; color: #fff !important;
   box-shadow: 0 10px 24px rgba(0,0,0,.22) !important;
+  font-size: 0 !important;
+  display: flex !important; align-items: center !important; justify-content: center !important;
+}
+#fab_btn button::before {
+  content: "+";
+  font-size: 26px;
+  line-height: 1;
 }
 
 .overlay {
@@ -1871,7 +1884,8 @@ def cap_toggle(is_unlimited):
     return gr.update(interactive=not is_unlimited_bool)
 
 def close_modal():
-    return gr.update(visible=False), gr.update(visible=False)
+    # 메인 모달 + 오버레이 닫기
+    return gr.update(visible=False), gr.update(visible=False), False
 
 def fav_updates(favs):
     out = []
@@ -1898,6 +1912,7 @@ def open_modal(req: gr.Request):
         gr.update(value=""),
         gr.update(value=""),
         gr.update(value=None),
+        True,
     )
 
 def select_fav(name: str):
@@ -1918,21 +1933,21 @@ def delete_fav_click(name: str):
     delete_fav(name)
     return gr.update(value="삭제 완료"), *fav_updates(get_top_favs(10))
 
-def open_img_modal():
-    # 사진 업로드 모달을 열 때 배경 오버레이도 함께 켠다 (로그인 직후 '난장판' 방지)
-    return gr.update(visible=True), gr.update(visible=True)
+def open_img_modal(main_open: bool):
+    # 사진 업로드 모달을 열 때 배경 오버레이도 함께 켠다
+    return gr.update(visible=True), gr.update(visible=True), bool(main_open)
 
-def close_img_modal():
-    # 업로드 모달만 닫고, 메인 모달 흐름을 유지하려면 오버레이는 켜둔다
-    # (메인 모달이 열려있지 않은 상태에서 호출돼도 UI가 튀지 않게 하기 위해)
-    return gr.update(visible=True), gr.update(visible=False)
+def close_img_modal(main_open: bool):
+    # 업로드 모달 닫기: 메인 모달이 열려있으면 오버레이 유지, 아니면 오버레이도 닫기
+    return gr.update(visible=bool(main_open)), gr.update(visible=False), bool(main_open)
 
-def confirm_img(img_np):
+def confirm_img(img_np, main_open: bool):
     # 업로드 모달 닫고 미리보기 업데이트
     return (
-        gr.update(visible=True),
+        gr.update(visible=bool(main_open)),
         gr.update(visible=False),
         gr.update(value=img_np),
+        bool(main_open),
     )
 
 def save_event(
@@ -2069,12 +2084,13 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
                 elem_classes=["map-iframe"]
             )
 
-    with gr.Row(elem_classes=["fab-wrap"]):
-        fab = gr.Button("+", elem_classes=["fab-btn"])
+    # Floating action button (원형 + 버튼)
+    fab = gr.Button("", elem_id="fab_btn")
 
     overlay = gr.HTML("<div class='overlay'></div>", visible=False, elem_classes=["overlay"])
+    main_open = gr.State(False)
 
-    main_modal = gr.Column(visible=False, elem_classes=["main-modal"])
+    main_modal = gr.Column(visible=False, elem_classes=["main-modal"], elem_id="main_modal")
     with main_modal:
         gr.HTML("<div class='modal-header'>새 이벤트 만들기</div>", elem_classes=["modal-header"])
         with gr.Column(elem_classes=["modal-body"]):
@@ -2139,7 +2155,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             close_btn = gr.Button("닫기", elem_classes=["btn-close"])
             create_btn = gr.Button("등록하기", elem_classes=["btn-primary"])
 
-    img_modal = gr.Column(visible=False, elem_classes=["main-modal"])
+    img_modal = gr.Column(visible=False, elem_classes=["main-modal"], elem_id="img_modal")
     with img_modal:
         gr.HTML("<div class='modal-header'>사진 업로드</div>")
         with gr.Column(elem_classes=["modal-body"]):
@@ -2153,12 +2169,12 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     # 로그인/리다이렉트 직후 브라우저 상태에 따라 모달이 어중간하게 열려 보이는 경우가 있어
     # 첫 로드시 모달들을 항상 닫아 초기 상태를 강제로 맞춘다.
     def _reset_modals_on_load():
-        return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+        return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), False
 
     demo.load(
         fn=_reset_modals_on_load,
         inputs=None,
-        outputs=[overlay, main_modal, img_modal],
+        outputs=[overlay, main_modal, img_modal, main_open],
     )
 
     demo.load(
@@ -2266,11 +2282,12 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
             my_list,
             fav_msg,
             del_msg,
-            photo_preview
+            photo_preview,
+            main_open
         ],
     )
 
-    close_btn.click(fn=close_modal, inputs=None, outputs=[overlay, main_modal])
+    close_btn.click(fn=close_modal, inputs=None, outputs=[overlay, main_modal, main_open])
 
     for i in range(10):
         fav_select_btns[i].click(fn=select_fav, inputs=[fav_hidden_names[i]], outputs=[title])
@@ -2291,9 +2308,9 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     addr_search_btn.click(fn=search_addr, inputs=[addr_kw], outputs=[addr_choices, addr_status])
     addr_choices.change(fn=pick_addr, inputs=[addr_choices], outputs=[addr_text, picked_addr])
 
-    photo_add_btn.click(fn=open_img_modal, inputs=None, outputs=[overlay, img_modal])
-    img_cancel.click(fn=close_img_modal, inputs=None, outputs=[overlay, img_modal])
-    img_confirm.click(fn=confirm_img, inputs=[img_uploader], outputs=[overlay, img_modal, photo_preview])
+    photo_add_btn.click(fn=open_img_modal, inputs=[main_open], outputs=[overlay, img_modal, main_open])
+    img_cancel.click(fn=close_img_modal, inputs=[main_open], outputs=[overlay, img_modal, main_open])
+    img_confirm.click(fn=confirm_img, inputs=[img_uploader, main_open], outputs=[overlay, img_modal, photo_preview, main_open])
     photo_clear_btn.click(fn=lambda: None, inputs=None, outputs=[photo_preview])
 
     del_btn.click(fn=delete_my_event, inputs=[my_list], outputs=[del_msg, my_list])
@@ -2301,7 +2318,7 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
     create_btn.click(
         fn=save_event,
         inputs=[title, photo_preview, start, end, addr_text, picked_addr, cap_slider, cap_unlimited],
-        outputs=[save_msg, overlay, main_modal],
+        outputs=[save_msg, overlay, main_modal, main_open],
     ).then(
         fn=refresh_view,
         inputs=[page_state],
