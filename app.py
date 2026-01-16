@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: UI_FIX_V13_DATE_PLACE_FAV ###", flush=True)
+print("### DEPLOY MARKER: UI_FIX_V14_SYNC_MAP_EXPLORE ###", flush=True)
 import os
 import io
 import re
@@ -1644,10 +1644,17 @@ async def map_page(request: Request):
       const d = await r.json();
       if (!d.ok) { alert(d.message || '오류'); return; }
       await refresh();
+      if (window.parent) { window.parent.postMessage({type:'OSEYO_SYNC'}, '*'); }
     } catch (e) {
       alert('네트워크 오류');
     }
   }
+
+  window.addEventListener('message', (ev) => {
+    if (ev.data && ev.data.type === 'OSEYO_REFRESH') {
+      refresh();
+    }
+  });
 
   refresh();
   // 자동 폴링 제거(정신사납게 로딩 반복 방지)
@@ -2516,6 +2523,9 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
             place_confirm = gr.Button('선택', elem_classes=['btn-primary'])
 
     js_hook = gr.Textbox(visible=False, elem_id='js_hook')
+    js_hook2 = gr.Textbox(visible=False, elem_id='js_hook2')
+    map_signal = gr.Textbox(visible=False, elem_id='map_signal')
+    sync_btn = gr.Button('sync', visible=False, elem_id='sync_btn')
 
     # --- 초기 상태 강제 ---
     def _reset_on_load():
@@ -2553,6 +2563,28 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
 """
     )
 
+
+    # 지도(iframe)에서 참여/빠지기 시, 탐색/참여중 UI를 1회 갱신
+    demo.load(
+        fn=lambda: "",
+        inputs=None,
+        outputs=js_hook2,
+        js=r'''
+() => {
+  if (!window.__oseyo_sync_listener_installed) {
+    window.__oseyo_sync_listener_installed = true;
+    window.addEventListener('message', (ev) => {
+      if (ev.data && ev.data.type === 'OSEYO_SYNC') {
+        const btn = document.getElementById('sync_btn');
+        if (btn) btn.click();
+      }
+    });
+  }
+  return "";
+}
+'''
+    )
+
     # --- 이벤트 뷰 로드 ---
     demo.load(
         fn=refresh_view,
@@ -2565,9 +2597,42 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
         ],
     )
 
+
+    # 지도에서 sync 메시지를 받으면 refresh_view 실행
+    sync_btn.click(
+        fn=refresh_view,
+        inputs=None,
+        outputs=[
+            joined_wrap, joined_img, joined_info, joined_eid,
+            joined_wrap2, joined_img2, joined_info2, joined_eid2,
+            *sum([[cards[i], card_imgs[i], card_titles[i], card_metas[i], card_ids[i], card_btns[i]] for i in range(MAX_CARDS)], []),
+            msg_box,
+        ],
+    )
+
+    # Gradio 쪽 변경(참여/빠지기/생성/삭제) 후 지도 iframe을 1회 refresh
+    def _touch_map_signal():
+        import uuid as _uuid
+        return _uuid.uuid4().hex
+
+    map_signal.change(
+        fn=lambda v: v,
+        inputs=[map_signal],
+        outputs=[map_signal],
+        js=r'''
+(v) => {
+  const iframe = document.querySelector('.map-iframe iframe');
+  if (iframe && iframe.contentWindow) {
+    iframe.contentWindow.postMessage({type:'OSEYO_REFRESH'}, '*');
+  }
+  return v;
+}
+'''
+    )
+
     # --- 카드/참여 버튼 ---
     for i in range(MAX_CARDS):
-        card_btns[i].click(
+        _evt = card_btns[i].click(
             fn=toggle_join_and_refresh,
             inputs=[card_ids[i]],
             outputs=[
@@ -2577,6 +2642,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
                 msg_box,
             ],
         )
+        _evt.then(fn=_touch_map_signal, inputs=None, outputs=[map_signal])
 
     joined_leave.click(
         fn=toggle_join_and_refresh,
@@ -2587,7 +2653,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
             *sum([[cards[j], card_imgs[j], card_titles[j], card_metas[j], card_ids[j], card_btns[j]] for j in range(MAX_CARDS)], []),
             msg_box,
         ],
-    )
+    ).then(fn=_touch_map_signal, inputs=None, outputs=[map_signal])
 
     joined_leave2.click(
         fn=toggle_join_and_refresh,
@@ -2598,7 +2664,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
             *sum([[cards[j], card_imgs[j], card_titles[j], card_metas[j], card_ids[j], card_btns[j]] for j in range(MAX_CARDS)], []),
             msg_box,
         ],
-    )
+    ).then(fn=_touch_map_signal, inputs=None, outputs=[map_signal])
 
     # --- 메인 모달 열기/닫기 ---
     fab.click(
@@ -2665,7 +2731,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
     )
 
     # 내 글 삭제
-    del_btn.click(fn=delete_my_event, inputs=[my_list], outputs=[del_msg, my_list])
+    del_btn.click(fn=delete_my_event, inputs=[my_list], outputs=[del_msg, my_list]).then(fn=_touch_map_signal, inputs=None, outputs=[map_signal])
 
     # 등록
     create_btn.click(
@@ -2681,7 +2747,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
             *sum([[cards[i], card_imgs[i], card_titles[i], card_metas[i], card_ids[i], card_btns[i]] for i in range(MAX_CARDS)], []),
             msg_box,
         ],
-    )
+    ).then(fn=_touch_map_signal, inputs=None, outputs=[map_signal])
 
 app = gr.mount_gradio_app(app, demo, path='/app', show_api=False)
 
