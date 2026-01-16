@@ -1689,6 +1689,18 @@ a { color: inherit; }
 .section-title { font-weight:800; margin: 12px 0 6px; }
 .helper { color: var(--muted); font-size:12px; margin: 0 0 10px; }
 
+
+.dt-wrap { width:100%; }
+.dt-label { font-size:13px; color:#374151; margin:0 0 6px; }
+.dt-input { width:100%; padding:12px 12px; border:1px solid #e5e7eb; border-radius:12px; font-size:15px; outline:none; background:#fff; }
+.dt-input:focus { border-color:#111827; }
+
+.dt-wrap{display:flex;flex-direction:column;gap:6px;width:100%;}
+.dt-label{font-size:13px;color:#374151;}
+.dt-input{width:100%;padding:12px 12px;border:1px solid #e5e7eb;border-radius:12px;font-size:15px;outline:none;background:#fff;}
+.dt-input:focus{border-color:#111827;}
+
+
 #fab_btn {
   position: fixed; right: 22px; bottom: 22px; z-index: 9999;
 }
@@ -1698,7 +1710,7 @@ a { color: inherit; }
   min-width: 56px !important; max-width: 56px !important;
   padding: 0 !important;
   border-radius: 999px !important;
-  background: #111 !important; color: #fff !important;
+  background: #ff5a1f !important; color: #fff !important;
   border: 0 !important;
   box-shadow: 0 12px 28px rgba(0,0,0,.28) !important;
   display: flex !important; align-items: center !important; justify-content: center !important;
@@ -1726,7 +1738,7 @@ a { color: inherit; }
 .modal-body { padding: 14px 16px; overflow-y:auto; }
 .modal-footer { padding: 12px 16px; border-top: 1px solid var(--line); display:flex; gap:10px; }
 .modal-footer .btn-close button { background:#eee !important; color:#111 !important; border-radius:12px !important; }
-.modal-footer .btn-primary button { background:#111 !important; color:#fff !important; border-radius:12px !important; }
+.modal-footer .btn-primary button { background: #ff5a1f !important; color: #fff !important; border-radius:12px !important; }
 .modal-footer .btn-danger button { background: var(--danger) !important; color:#fff !important; border-radius:12px !important; }
 
 .note { color: var(--muted); font-size:12px; line-height:1.4; white-space: normal; }
@@ -1741,7 +1753,7 @@ a { color: inherit; }
 .event-img img { width:100% !important; border-radius:16px !important; object-fit:cover !important; height:220px !important; }
 @media (min-width: 900px) { .event-img img { height:180px !important; } }
 
-.join-btn button { border-radius:999px !important; background:#111 !important; color:#fff !important; font-weight:800 !important; }
+.join-btn button { border-radius:999px !important; background: #ff5a1f !important; color: #fff !important; font-weight:800 !important; }
 .join-btn button[disabled] { background:#9ca3af !important; }
 
 .joined-box { background: rgba(255,255,255,.8); border:1px solid var(--line); border-radius:18px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
@@ -2023,13 +2035,13 @@ def delete_my_event(choice: str, req: gr.Request):
 
 
 def search_addr_kw(keyword: str):
-    """장소 검색 결과를 '검색어 입력칸(드롭다운)'에 바로 choices로 채운다."""
-    kw = (keyword or "").strip()
+    """장소 검색 결과를 입력칸 아래 리스트로 바로 보여준다."""
+    kw = (keyword or '').strip()
     docs = kakao_search(kw, size=8) if kw else []
     if not docs:
-        return gr.update(choices=[], value=kw), gr.update(value="검색 결과가 없습니다.")
+        return gr.update(choices=[], value=None, visible=False), gr.update(value='검색 결과가 없습니다.')
     choices = [f"{d['name']} | {d['addr']} | ({d['y']:.5f},{d['x']:.5f})" for d in docs]
-    return gr.update(choices=choices, value=kw), gr.update(value=f"{len(choices)}건 검색됨")
+    return gr.update(choices=choices, value=None, visible=True), gr.update(value=f"{len(choices)}건 검색됨")
 
 
 def pick_addr_kw(choice: str):
@@ -2082,12 +2094,12 @@ def open_main_modal(req: gr.Request):
         gr.update(choices=my_events_for_user(uid), value=None),
         gr.update(value=""),  # fav_msg
         gr.update(value=""),  # del_msg
-        gr.update(value=None),  # photo_preview
+        gr.update(value=None),  # photo
         gr.update(value=""),  # title
-        gr.update(value=today),  # start_date
+        gr.update(value=today),  # start_date_hidden
+        gr.update(value=""),  # end_date_hidden
         gr.update(value=hh),     # start_hour
         gr.update(value=mm),     # start_min
-        gr.update(value=""),   # end_date
         gr.update(value=hh),     # end_hour
         gr.update(value=mm),     # end_min
         gr.update(value=10, interactive=True),  # cap_slider
@@ -2164,12 +2176,13 @@ def confirm_img(img_np):
 # ---- 장소 검색(서브 모달) ----
 
 def open_place_modal():
-    # overlay2, place_modal, addr_kw(choices/value), addr_status, addr_preview, picked_tmp
+    # overlay2, place_modal, addr_kw, addr_status, addr_results, addr_preview, picked_tmp
     return (
         gr.update(visible=True),
         gr.update(visible=True),
-        gr.update(choices=[], value=""),
         gr.update(value=""),
+        gr.update(value=""),
+        gr.update(choices=[], value=None, visible=False),
         gr.update(value=""),
         gr.update(value=""),
     )
@@ -2289,6 +2302,18 @@ a { color: inherit; }
 .section-title { font-weight:800; margin: 12px 0 6px; }
 .helper { color: var(--muted); font-size:12px; margin: 0 0 10px; }
 
+
+.dt-wrap { width:100%; }
+.dt-label { font-size:13px; color:#374151; margin:0 0 6px; }
+.dt-input { width:100%; padding:12px 12px; border:1px solid #e5e7eb; border-radius:12px; font-size:15px; outline:none; background:#fff; }
+.dt-input:focus { border-color:#111827; }
+
+.dt-wrap{display:flex;flex-direction:column;gap:6px;width:100%;}
+.dt-label{font-size:13px;color:#374151;}
+.dt-input{width:100%;padding:12px 12px;border:1px solid #e5e7eb;border-radius:12px;font-size:15px;outline:none;background:#fff;}
+.dt-input:focus{border-color:#111827;}
+
+
 /* Floating + */
 #fab_btn {
   position: fixed !important;
@@ -2311,8 +2336,7 @@ a { color: inherit; }
   max-width: 56px !important;
   padding: 0 !important;
   border-radius: 999px !important;
-  background: #111 !important;
-  color: #fff !important;
+  background: #ff5a1f !important; color: #fff !important;
   font-size: 26px !important;
   line-height: 1 !important;
   box-shadow: 0 10px 24px rgba(0,0,0,.22) !important;
@@ -2341,7 +2365,7 @@ a { color: inherit; }
 .modal-body { padding: 14px 16px; overflow-y:auto; height: calc(100% - 110px); }
 .modal-footer { padding: 12px 16px; border-top: 1px solid var(--line); display:flex; gap:10px; }
 .modal-footer .btn-close button { background:#eee !important; color:#111 !important; border-radius:12px !important; }
-.modal-footer .btn-primary button { background:#111 !important; color:#fff !important; border-radius:12px !important; }
+.modal-footer .btn-primary button { background: #ff5a1f !important; color: #fff !important; border-radius:12px !important; }
 .modal-footer .btn-danger button { background: var(--danger) !important; color:#fff !important; border-radius:12px !important; }
 
 .note { color: var(--muted); font-size:12px; line-height:1.4; white-space: normal; }
@@ -2366,7 +2390,7 @@ a { color: inherit; }
 .event-img img { width:100% !important; border-radius:16px !important; object-fit:cover !important; height:220px !important; }
 @media (min-width: 900px) { .event-img img { height:180px !important; } }
 
-.join-btn button { border-radius:999px !important; background:#111 !important; color:#fff !important; font-weight:800 !important; }
+.join-btn button { border-radius:999px !important; background: #ff5a1f !important; color: #fff !important; font-weight:800 !important; }
 .join-btn button[disabled] { background:#9ca3af !important; }
 
 .joined-box { background: rgba(255,255,255,.8); border:1px solid var(--line); border-radius:18px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
@@ -2444,6 +2468,13 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
         with gr.Column(elem_classes=['modal-body']):
             with gr.Tabs():
                 with gr.Tab('작성하기'):
+                    # 이벤트명을 가장 상단에
+                    title = gr.Textbox(label='이벤트명', placeholder='예: 30분 산책, 조용히 책 읽기')
+
+                    # 사진 업로드(모달 없이 바로 업로드)
+                    photo = gr.Image(label='사진', type='numpy', height=160, interactive=True)
+                    photo_clear_btn = gr.Button('사진 제거', variant='secondary')
+
                     gr.Markdown('#### ⭐ 자주하는 활동')
                     gr.HTML("<div class='note'>버튼을 누르면 이벤트명에 바로 입력됩니다.</div>")
 
@@ -2465,18 +2496,17 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
                         fav_add_btn = gr.Button('추가', scale=1)
                     fav_msg = gr.Markdown()
 
-                    title = gr.Textbox(label='이벤트명', placeholder='예: 30분 산책, 조용히 책 읽기')
+                    # 날짜/시간 선택 (초 없음)
+                    # 날짜는 캘린더(HTML date input), 시/분은 드롭다운 (초 없음)
+                    start_date_hidden = gr.Textbox(visible=False, elem_id='start_date_hidden')
+                    end_date_hidden = gr.Textbox(visible=False, elem_id='end_date_hidden')
 
-                    photo_preview = gr.Image(label='사진(미리보기)', interactive=False, height=160)
                     with gr.Row():
-                        photo_add_btn = gr.Button('사진 업로드', variant='secondary')
-                        photo_clear_btn = gr.Button('사진 제거', variant='secondary')                    # 날짜/시간 선택 (초 없음)
-                    with gr.Row():
-                        start_date = gr.Textbox(label='시작 날짜', placeholder='YYYY-MM-DD', elem_id='start_date', lines=1, max_lines=1)
+                        start_date_ui = gr.HTML("<div class='dt-wrap'><div class='dt-label'>시작 날짜</div><input id='start_date_pick' class='dt-input' type='date' /></div>")
                         start_hour = gr.Dropdown(choices=HOUR_CHOICES, value='18', label='시', scale=1)
                         start_min = gr.Dropdown(choices=MIN_CHOICES, value='00', label='분', scale=1)
                     with gr.Row():
-                        end_date = gr.Textbox(label='종료 날짜(선택)', placeholder='YYYY-MM-DD', elem_id='end_date', lines=1, max_lines=1)
+                        end_date_ui = gr.HTML("<div class='dt-wrap'><div class='dt-label'>종료 날짜(선택)</div><input id='end_date_pick' class='dt-input' type='date' /></div>")
                         end_hour = gr.Dropdown(choices=HOUR_CHOICES, value='18', label='시', scale=1)
                         end_min = gr.Dropdown(choices=MIN_CHOICES, value='00', label='분', scale=1)
 
@@ -2501,24 +2531,15 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
             close_btn = gr.Button('닫기', elem_classes=['btn-close'])
             create_btn = gr.Button('등록하기', elem_classes=['btn-primary'])
 
-    # --- Photo modal ---
-    img_modal = gr.Column(visible=False, elem_classes=['sub-modal'], elem_id='img_modal')
-    with img_modal:
-        gr.HTML("<div class='modal-header'>사진 업로드</div>")
-        with gr.Column(elem_classes=['modal-body']):
-            img_uploader = gr.Image(label='이미지 선택', type='numpy')
-        with gr.Row(elem_classes=['modal-footer']):
-            img_cancel = gr.Button('닫기', elem_classes=['btn-close'])
-            img_confirm = gr.Button('확인', elem_classes=['btn-primary'])
-
     # --- Place search sub-modal ---
     place_modal = gr.Column(visible=False, elem_classes=['sub-modal'], elem_id='place_modal')
     with place_modal:
         gr.HTML("<div class='modal-header'>장소 검색</div>")
         with gr.Column(elem_classes=['modal-body']):
-            addr_kw = gr.Dropdown(label='검색어', choices=[], value='', allow_custom_value=True, elem_id='addr_kw')
+            addr_kw = gr.Textbox(label='검색어', placeholder='예: 포은중앙도서관', elem_id='addr_kw')
             addr_search_btn = gr.Button('검색')
             addr_status = gr.Markdown()
+            addr_results = gr.Radio(label='', choices=[], value=None, visible=False)
             addr_preview = gr.Textbox(label='선택된 장소', interactive=False)
             picked_tmp = gr.State('')
         with gr.Row(elem_classes=['modal-footer']):
@@ -2535,38 +2556,46 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
         return (
             gr.update(visible=False), gr.update(visible=False),
             gr.update(visible=False), gr.update(visible=False),
-            gr.update(visible=False), gr.update(visible=False),
             False,
         )
 
     demo.load(
         fn=_reset_on_load,
         inputs=None,
-        outputs=[overlay, main_modal, overlay2, place_modal, overlay2, img_modal, main_open],
+        outputs=[overlay, main_modal, overlay2, place_modal, main_open],
     )
 
-    # 날짜 입력은 브라우저 캘린더(type=date) 강제 (초/오전오후 UI 방지)
+    # 날짜 입력(HTML date input) <-> hidden textbox 동기화
     demo.load(
-        fn=lambda: "",
+        fn=lambda: '',
         inputs=None,
         outputs=js_hook,
         js="""
 () => {
-  const setDateType = (id) => {
-    // Gradio 5.x Textbox는 상황에 따라 input/textarea가 달라질 수 있어 input을 확실히 잡는다.
-    const wrap = document.getElementById(id);
-    if (!wrap) return;
-    const el = wrap.querySelector('input') || wrap.querySelector('textarea');
-    if (!el) return;
-    // textarea면 type을 줄 수 없어서, lines=1/max_lines=1로 input 렌더링되게 하고 여기선 input만 처리
-    if (el.tagName.toLowerCase() === 'input') {
-      el.type = 'date';
-      el.step = '1';
-    }
+  const bind = (pickId, hiddenId) => {
+    const pick = document.getElementById(pickId);
+    const hiddenWrap = document.getElementById(hiddenId);
+    if (!pick || !hiddenWrap) return;
+    const hidden = hiddenWrap.querySelector('input') || hiddenWrap.querySelector('textarea');
+    if (!hidden) return;
+
+    // hidden -> pick
+    const syncToPick = () => {
+      if (hidden.value && pick.value !== hidden.value) pick.value = hidden.value;
+    };
+    hidden.addEventListener('input', syncToPick);
+    syncToPick();
+
+    // pick -> hidden
+    pick.addEventListener('change', () => {
+      hidden.value = pick.value || '';
+      hidden.dispatchEvent(new Event('input', { bubbles: true }));
+    });
   };
-  setDateType('start_date');
-  setDateType('end_date');
-  return "";
+
+  bind('start_date_pick', 'start_date_hidden');
+  bind('end_date_pick', 'end_date_hidden');
+  return '';
 }
 """
     )
@@ -2683,10 +2712,12 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
             *sum([[fav_boxes[i], fav_select_btns[i], fav_del_btns[i], fav_hidden_names[i]] for i in range(10)], []),
             my_list,
             fav_msg, del_msg,
-            photo_preview,
+            photo,
             title,
-            start_date, start_hour, start_min,
-            end_date, end_hour, end_min,
+            start_date_hidden,
+            end_date_hidden,
+            start_hour, start_min,
+            end_hour, end_min,
             cap_slider, cap_unlimited,
             addr_text, picked_addr,
             save_msg,
@@ -2712,25 +2743,19 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
     )
 
     cap_unlimited.change(fn=cap_toggle, inputs=[cap_unlimited], outputs=[cap_slider])
-
-    # 사진 업로드
-    photo_add_btn.click(fn=lambda: (gr.update(visible=True), gr.update(visible=True)), inputs=None, outputs=[overlay2, img_modal])
-    img_cancel.click(fn=lambda: (gr.update(visible=False), gr.update(visible=False)), inputs=None, outputs=[overlay2, img_modal])
-    img_confirm.click(fn=confirm_img, inputs=[img_uploader], outputs=[img_modal, photo_preview]).then(
-        fn=lambda: gr.update(visible=False), inputs=None, outputs=[overlay2]
-    )
-    photo_clear_btn.click(fn=lambda: None, inputs=None, outputs=[photo_preview])
+    # 사진 업로드(모달 없이)
+    photo_clear_btn.click(fn=lambda: None, inputs=None, outputs=[photo])
 
     # 장소 검색 서브모달
     place_open_btn.click(
         fn=open_place_modal,
         inputs=None,
-        outputs=[overlay2, place_modal, addr_kw, addr_status, addr_preview, picked_tmp],
+        outputs=[overlay2, place_modal, addr_kw, addr_status, addr_results, addr_preview, picked_tmp],
     )
     place_cancel.click(fn=close_place_modal, inputs=None, outputs=[overlay2, place_modal])
 
-    addr_search_btn.click(fn=search_addr_kw, inputs=[addr_kw], outputs=[addr_kw, addr_status])
-    addr_kw.change(fn=pick_addr_kw, inputs=[addr_kw], outputs=[addr_preview, picked_tmp])
+    addr_search_btn.click(fn=search_addr_kw, inputs=[addr_kw], outputs=[addr_results, addr_status])
+    addr_results.change(fn=pick_addr_kw, inputs=[addr_results], outputs=[addr_preview, picked_tmp])
 
     place_confirm.click(
         fn=confirm_place,
@@ -2744,7 +2769,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
     # 등록
     create_btn.click(
         fn=save_event,
-        inputs=[title, photo_preview, start_date, start_hour, start_min, end_date, end_hour, end_min, addr_text, picked_addr, cap_slider, cap_unlimited],
+        inputs=[title, photo, start_date_hidden, start_hour, start_min, end_date_hidden, end_hour, end_min, addr_text, picked_addr, cap_slider, cap_unlimited],
         outputs=[save_msg, overlay, main_modal, main_open],
     ).then(
         fn=refresh_view,
