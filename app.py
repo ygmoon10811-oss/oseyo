@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: V17_HIDE_ENDED ###", flush=True)
-print("### DEPLOY MARKER: UI_FIX_V15_FAB_MODAL_DATE ###", flush=True)
+print("### DEPLOY MARKER: V19_FAV_MANUAL_FAB_VISIBLE ###", flush=True)
 import os
 import io
 import re
@@ -1480,7 +1479,7 @@ async def api_events_json(request: Request):
                 "start": e.get("start") or "",
                 "end": e.get("end") or "",
                 "start_fmt": fmt_start(e.get("start")),
-                "remain": remain_text(e.get("end")),
+                "remain": remain_text(e.get("end"), e.get("start")),
                 "photo": e.get("photo") or "",
                 "count": cnt,
                 "cap_label": cap_label,
@@ -1516,7 +1515,7 @@ async def api_my_join(request: Request):
                 "title": e.get("title") or "",
                 "addr": e.get("addr") or "",
                 "start_fmt": fmt_start(e.get("start")),
-                "remain": remain_text(e.get("end")),
+                "remain": remain_text(e.get("end"), e.get("start")),
                 "photo": e.get("photo") or "",
                 "count": int(cnt),
                 "cap_label": cap_label,
@@ -1827,6 +1826,59 @@ a { color: inherit; }
 .joined-img img { width:100% !important; border-radius:16px !important; object-fit:cover !important; height:180px !important; }
 
 .map-iframe iframe { width:100%; height: 70vh; min-height:520px; border:0; border-radius:18px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
+
+/* --- FAB force-visible (v19) --- */
+button#fab_btn,
+#fab_btn,
+#fab_btn button,
+#fab_btn .gr-button,
+#fab_btn .gradio-button,
+#fab_btn .gr-button-primary {
+  width: 56px !important;
+  height: 56px !important;
+  min-width: 56px !important;
+  max-width: 56px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-radius: 999px !important;
+  background: #ff5a1f !important;
+  color: #ffffff !important;
+  border: 2px solid rgba(17,17,17,.15) !important;
+  box-shadow: 0 12px 28px rgba(0,0,0,.28) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 28px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+}
+button#fab_btn:hover,
+#fab_btn button:hover,
+#fab_btn .gr-button:hover,
+#fab_btn .gradio-button:hover {
+  filter: brightness(0.95);
+}
+button#fab_btn:active,
+#fab_btn button:active,
+#fab_btn .gr-button:active,
+#fab_btn .gradio-button:active {
+  transform: translateY(1px);
+}
+
+/* Ensure fixed positioning whether elem_id lands on wrapper div or button */
+button#fab_btn {
+  position: fixed !important;
+  right: 22px !important;
+  bottom: 22px !important;
+  z-index: 9999 !important;
+}
+#fab_btn {
+  position: fixed !important;
+  right: 22px !important;
+  bottom: 22px !important;
+  z-index: 9999 !important;
+}
+
 """
 
 # ---- 이하 Gradio/이벤트 생성/지도/즐겨찾기 로직은 네 코드 그대로 붙여도 된다.
@@ -1912,7 +1964,7 @@ def card_md(e: dict):
     title = html.escape((e.get("title") or "").strip())
     addr = html.escape((e.get("addr") or "").strip())
     start = html.escape(fmt_start(e.get("start")))
-    rem = remain_text(e.get("end"))
+    rem = remain_text(e.get("end"), e.get("start"))
     rem_txt = f" · **{html.escape(rem)}**" if rem and rem != "종료됨" else ""
     cap = f"{e.get('count',0)}/{html.escape(e.get('cap_label','∞'))}"
     title_md = f"### {title}"
@@ -1931,7 +1983,7 @@ def get_joined_view(user_id: str):
         cnt = con.execute("SELECT COUNT(*) FROM event_participants WHERE event_id=?", (eid,)).fetchone()[0]
     cap_label = _event_capacity_label(e.get("capacity"), e.get("is_unlimited"))
     start = fmt_start(e.get("start"))
-    rem = remain_text(e.get("end"))
+    rem = remain_text(e.get("end"), e.get("start"))
     addr = e.get("addr") or ""
     info = f"**{e.get('title','')}**\n\n⏰ {start} · **{rem}**\n\n📍 {addr}\n\n👥 {cnt}/{cap_label}"
     return True, (decode_photo(e.get("photo")) if e.get("photo") else None), info, eid
@@ -2341,7 +2393,8 @@ def save_event(
         )
         con.commit()
 
-    bump_fav(title)
+    # NOTE: Do not auto-add new event titles to favorites.
+    # Favorites should be added only via the explicit "즐겨찾기 추가" action.
     return gr.update(value="등록 완료"), gr.update(visible=False), gr.update(visible=False), False
 
 
@@ -2393,7 +2446,7 @@ a { color: inherit; }
   max-width: 56px !important;
   padding: 0 !important;
   margin: 0 !important;
-  background: transparent !important;
+  background: transparent !important; /* wrapper div case */
   border: 0 !important;
 }
 #fab_btn button, #fab_btn .gr-button {
@@ -2403,10 +2456,40 @@ a { color: inherit; }
   max-width: 56px !important;
   padding: 0 !important;
   border-radius: 999px !important;
-  background: #ff5a1f !important; color: #fff !important;
-  font-size: 26px !important;
+  background: #ff5a1f !important;
+  color: #fff !important;
+  font-size: 28px !important;
+  font-weight: 900 !important;
   line-height: 1 !important;
-  box-shadow: 0 10px 24px rgba(0,0,0,.22) !important;
+  border: 0 !important;
+  box-shadow: 0 12px 28px rgba(0,0,0,.28) !important;
+}
+/* button id case (some gradio versions attach elem_id to the <button>) */
+button#fab_btn {
+  position: fixed !important;
+  right: 22px !important;
+  bottom: 22px !important;
+  z-index: 9999 !important;
+  width: 56px !important;
+  height: 56px !important;
+  min-width: 56px !important;
+  max-width: 56px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-radius: 999px !important;
+  background: #ff5a1f !important;
+  color: #fff !important;
+  font-size: 28px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+  border: 0 !important;
+  box-shadow: 0 12px 28px rgba(0,0,0,.28) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+#fab_btn button:hover, #fab_btn .gr-button:hover, button#fab_btn:hover {
+  filter: brightness(0.95);
 }
 
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0); z-index: 60; }
@@ -2464,6 +2547,49 @@ a { color: inherit; }
 .joined-img img { width:100% !important; border-radius:16px !important; object-fit:cover !important; height:180px !important; }
 
 .map-iframe iframe { width:100%; height: 70vh; min-height:520px; border:0; border-radius:18px; box-shadow:0 8px 22px rgba(0,0,0,.06); }
+
+/* --- v19: Force FAB visible (id may be on wrapper div or button) --- */
+button#fab_btn,
+#fab_btn,
+#fab_btn button,
+#fab_btn .gr-button {
+  width: 56px !important;
+  height: 56px !important;
+  min-width: 56px !important;
+  max-width: 56px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-radius: 999px !important;
+  background: #ff5a1f !important;
+  color: #ffffff !important;
+  border: 2px solid rgba(17,17,17,.15) !important;
+  box-shadow: 0 12px 28px rgba(0,0,0,.28) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 28px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+button#fab_btn {
+  position: fixed !important;
+  right: 22px !important;
+  bottom: 22px !important;
+  z-index: 9999 !important;
+}
+#fab_btn {
+  position: fixed !important;
+  right: 22px !important;
+  bottom: 22px !important;
+  z-index: 9999 !important;
+}
+button#fab_btn:hover,
+#fab_btn button:hover,
+#fab_btn .gr-button:hover {
+  filter: brightness(0.95);
+}
+
 """
 
 # Date/Time controls (no seconds): 날짜는 브라우저 캘린더(type=date), 시/분은 드롭다운
@@ -2474,8 +2600,8 @@ MIN_CHOICES = [f"{i:02d}" for i in range(0, 60, 5)]
 with gr.Blocks(css=CSS, title='오세요') as demo:
     with gr.Row(elem_classes=['header']):
         with gr.Column(scale=8):
-            gr.Markdown('## 지금 열린 곳으로 오세요')
-            gr.Markdown("<span style='color:#6b7280;font-size:13px'>원하는 활동에 참여하세요</span>")
+            gr.Markdown('## 지금, 열려 있습니다')
+            gr.Markdown("<span style='color:#6b7280;font-size:13px'>편하면 오셔도 됩니다</span>")
         with gr.Column(scale=2, elem_classes=['logout']):
             gr.HTML("<div style='text-align:right'><a href='/logout'>로그아웃</a></div>")
 
@@ -2484,7 +2610,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
     with tabs:
         with gr.Tab('탐색'):
             gr.Markdown('### 열려 있는 활동', elem_classes=['section-title'])
-            gr.Markdown('참여중인 활동이 있을 시에는 다른 활동에 참여할 수 없습니다.', elem_classes=['helper'])
+            gr.Markdown('참여하기는 1개 활동만 가능하다. 다른 활동에 참여하려면 먼저 빠지기를 해야 한다.', elem_classes=['helper'])
 
             joined_wrap = gr.Column(visible=False, elem_classes=['joined-box'])
             with joined_wrap:
@@ -2853,4 +2979,3 @@ app = gr.mount_gradio_app(app, demo, path='/app', show_api=False)
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=int(os.getenv('PORT','8000')))
-
