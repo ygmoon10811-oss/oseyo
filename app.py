@@ -6,6 +6,7 @@ import re
 import uuid
 import json
 import base64
+import csv
 import sqlite3
 import hashlib
 import html
@@ -13,9 +14,8 @@ from datetime import datetime, timedelta, timezone
 
 import uvicorn
 
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
-
+from fastapi import FastAPI, Request, Form, Query
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response, FileResponse
 import requests
 from PIL import Image
 
@@ -797,12 +797,72 @@ async def root_redirect():
 async def healthz():
     # Render health check endpoint (must return 200 without auth)
     return {"ok": True}
+
+# --- BEGIN: Admin DB export (for local inspection) ---
+ADMIN_DB_TOKEN = os.getenv("ADMIN_DB_TOKEN", "").strip()
+
+def _admin_auth(token: str) -> bool:
+    return bool(ADMIN_DB_TOKEN) and (token == ADMIN_DB_TOKEN)
+
+@app.get("/admin/db")
+async def admin_download_db(token: str = Query("")):
+    # Return the SQLite DB file. Protected by ADMIN_DB_TOKEN.
+    if not _admin_auth(token):
+        return JSONResponse({"ok": False, "message": "unauthorized"}, status_code=401)
+    return FileResponse(
+        DB_PATH,
+        media_type="application/octet-stream",
+        filename=os.path.basename(DB_PATH),
+    )
+
+@app.get("/admin/users.csv")
+async def admin_users_csv(token: str = Query("")):
+    if not _admin_auth(token):
+        return JSONResponse({"ok": False, "message": "unauthorized"}, status_code=401)
+    import io as _io
+    buf = _io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["id", "email", "name", "gender", "birth", "created_at"])
+    with db_conn() as con:
+        rows = con.execute(
+            "SELECT id, email, name, gender, birth, created_at FROM users ORDER BY created_at DESC"
+        ).fetchall()
+    w.writerows(rows)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=users.csv"},
+    )
+
+@app.get("/admin/events.csv")
+async def admin_events_csv(token: str = Query("")):
+    if not _admin_auth(token):
+        return JSONResponse({"ok": False, "message": "unauthorized"}, status_code=401)
+    import io as _io
+    buf = _io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([
+        "id", "title", "start", "end", "addr", "lat", "lng", "created_at", "user_id", "capacity", "is_unlimited"
+    ])
+    with db_conn() as con:
+        rows = con.execute(
+            "SELECT id, title, start, end, addr, lat, lng, created_at, user_id, capacity, is_unlimited FROM events ORDER BY created_at DESC"
+        ).fetchall()
+    w.writerows(rows)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=events.csv"},
+    )
+# --- END: Admin DB export ---
+
 PUBLIC_PATH_PREFIXES = (
     "/login",
     "/signup",
     "/send_email_otp",
     "/static",
     "/healthz",
+    "/admin",
 
 )
 
