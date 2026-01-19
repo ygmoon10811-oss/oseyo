@@ -370,6 +370,21 @@ def parse_dt(s):
     s = str(s).strip()
     if not s:
         return None
+
+    # --- Normalize common ISO variants ---
+    # 1) Trailing 'Z' (UTC) -> '+00:00' so datetime.fromisoformat can parse it.
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+
+    # 2) Some strings come as 'YYYY-MM-DD HH:MM+09:00' (space instead of 'T')
+    #    If it looks like there is a timezone offset, replace the first space with 'T'.
+    if " " in s and ("+" in s or "-" in s[10:]):
+        head, tail = s.split(" ", 1)
+        if head.count("-") == 2 and (("+" in tail) or ("-" in tail[5:])):
+            s = head + "T" + tail
+
+    # 3) If it is 'YYYY-MM-DD HH:MM' style, leave it for strptime fallback.
+
     try:
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
@@ -377,6 +392,7 @@ def parse_dt(s):
         return dt.astimezone(KST)
     except Exception:
         pass
+
     for fmt in _DT_FORMATS:
         try:
             dt = datetime.strptime(s, fmt)
@@ -384,7 +400,6 @@ def parse_dt(s):
         except Exception:
             continue
     return None
-
 
 def is_active_event(end_s):
     end_dt = parse_dt(end_s)
