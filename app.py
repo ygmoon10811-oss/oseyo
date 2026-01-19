@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: HIDE_ENDED_V4 ###", flush=True)
+print("### DEPLOY MARKER: V17_HIDE_ENDED ###", flush=True)
+print("### DEPLOY MARKER: UI_FIX_V15_FAB_MODAL_DATE ###", flush=True)
 import os
 import io
 import re
@@ -375,24 +376,23 @@ def parse_dt(s, assume_end: bool = False):
     if not s:
         return None
 
-    # --- Normalize common variants ---
-    # 1) Trailing 'Z' (UTC) -> '+00:00'
+    # Trailing 'Z' (UTC) -> '+00:00'
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
 
-    # 2) Compact date + time with a space: 'YYYYMMDD HH:MM' or 'YYYYMMDD HH:MM:SS'
+    # 'YYYYMMDD HH:MM' or 'YYYYMMDD HH:MM:SS'
     m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$", s)
     if m:
         y, mo, d, hh, mm, ss = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)
         return datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss or 0), tzinfo=KST)
 
-    # 3) Some strings come as 'YYYY-MM-DD HH:MM+09:00' (space instead of 'T')
+    # 'YYYY-MM-DD HH:MM+09:00' (space instead of 'T')
     if " " in s and ("+" in s[10:] or "-" in s[10:]):
         head, tail = s.split(" ", 1)
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", head):
             s = head + "T" + tail
 
-    # --- Parse (ISO first) ---
+    # ISO first
     try:
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
@@ -400,14 +400,14 @@ def parse_dt(s, assume_end: bool = False):
         else:
             dt = dt.astimezone(KST)
 
-        # If end is date-only, treat as end-of-day
+        # end가 날짜만이면 그날 23:59:59로
         if assume_end and (re.fullmatch(r"\d{4}-\d{2}-\d{2}", s) or re.fullmatch(r"\d{8}", s)):
             dt = dt.replace(hour=23, minute=59, second=59)
         return dt
     except Exception:
         pass
 
-    # --- Fallback strptime formats ---
+    # strptime fallback
     for fmt in _DT_FORMATS:
         try:
             dt = datetime.strptime(s, fmt).replace(tzinfo=KST)
@@ -416,31 +416,54 @@ def parse_dt(s, assume_end: bool = False):
             return dt
         except Exception:
             continue
-
     return None
 
 
-def is_active_event(end_s):
-    # end가 비어있으면(미설정) 계속 노출
-    if end_s is None or str(end_s).strip() == '':
-        return True
+def is_active_event(end_s, start_s=None):
+    """종료된 이벤트는 화면/API/지도에서 숨김 (DB는 유지)
 
-    end_dt = parse_dt(end_s, assume_end=True)
-    # end가 있는데도 파싱이 안 되면: 보수적으로 '종료'로 간주해서 숨김
-    if end_dt is None:
+    - end가 있으면 end 기준
+    - end가 없으면 start 기준으로 '시작한 날 23:59:59'까지 유효
+    - end가 있는데 파싱 실패하면 종료로 간주
+    - start도 없거나 파싱 실패하면 종료로 간주 (옛 데이터 노출 방지)
+    """
+    now = now_kst()
+
+    end_s_str = '' if end_s is None else str(end_s).strip()
+    if end_s_str:
+        end_dt = parse_dt(end_s_str, assume_end=True)
+        if end_dt is None:
+            return False
+        return end_dt >= now
+
+    start_s_str = '' if start_s is None else str(start_s).strip()
+    if not start_s_str:
         return False
-    return end_dt >= now_kst()
+    sdt = parse_dt(start_s_str)
+    if sdt is None:
+        return False
+    end_dt = sdt.replace(hour=23, minute=59, second=59)
+    return end_dt >= now
 
 
+def remain_text(end_s, start_s=None):
+    now = now_kst()
+    end_s_str = '' if end_s is None else str(end_s).strip()
 
-def remain_text(end_s):
-    if end_s is None or str(end_s).strip() == '':
-        return ''
+    if end_s_str:
+        end_dt = parse_dt(end_s_str, assume_end=True)
+        if end_dt is None:
+            return "종료됨"
+    else:
+        start_s_str = '' if start_s is None else str(start_s).strip()
+        if not start_s_str:
+            return ""
+        sdt = parse_dt(start_s_str)
+        if sdt is None:
+            return ""
+        end_dt = sdt.replace(hour=23, minute=59, second=59)
 
-    end_dt = parse_dt(end_s, assume_end=True)
-    if end_dt is None:
-        return '종료됨'
-    delta = end_dt - now_kst()
+    delta = end_dt - now
     if delta.total_seconds() <= 0:
         return "종료됨"
     total_min = int(delta.total_seconds() // 60)
@@ -459,6 +482,7 @@ def fmt_start(start_s):
     if not dt:
         return (start_s or "").strip()
     return dt.strftime("%m월 %d일 %H:%M")
+
 
 
 # =========================================================
@@ -514,12 +538,12 @@ def _get_event_counts(con, event_ids, user_id):
 def cleanup_ended_participation(user_id: str):
     with db_conn() as con:
         rows = con.execute(
-            "SELECT p.event_id, e.end FROM event_participants p LEFT JOIN events e ON e.id=p.event_id WHERE p.user_id=?",
+            "SELECT p.event_id, e.end, e.start FROM event_participants p LEFT JOIN events e ON e.id=p.event_id WHERE p.user_id=?",
             (user_id,),
         ).fetchall()
         to_delete = []
-        for eid, end_s in rows:
-            if not is_active_event(end_s):
+        for eid, end_s, start_s in rows:
+            if not is_active_event(end_s, start_s):
                 to_delete.append(eid)
         if to_delete:
             for eid in to_delete:
@@ -537,13 +561,13 @@ def get_joined_event_id(user_id: str):
     """
     with db_conn() as con:
         rows = con.execute(
-            "SELECT p.event_id, p.joined_at, e.end "
+            "SELECT p.event_id, p.joined_at, e.end, e.start "
             "FROM event_participants p LEFT JOIN events e ON e.id=p.event_id "
             "WHERE p.user_id=? ORDER BY p.joined_at DESC",
             (user_id,),
         ).fetchall()
-    for eid, _joined_at, end_s in rows:
-        if is_active_event(end_s):
+    for eid, _joined_at, end_s, start_s in rows:
+        if is_active_event(end_s, start_s):
             return eid
     return None
 
@@ -594,7 +618,7 @@ def list_active_events(limit: int = 500):
         "is_unlimited",
     ]
     events = [dict(zip(keys, r)) for r in rows]
-    return [e for e in events if is_active_event(e.get("end"))]
+    return [e for e in events if is_active_event(e.get("end"), e.get("start"))]
 
 
 def events_for_page(user_id: str, page: int, page_size: int):
@@ -633,7 +657,7 @@ def toggle_join(user_id: str, event_id: str):
     ev = get_event_by_id(event_id)
     if not ev:
         return False, "이벤트를 찾을 수 없습니다.", None
-    if not is_active_event(ev.get("end")):
+    if not is_active_event(ev.get("end"), ev.get("start")):
         return False, "이미 종료된 이벤트입니다.", None
 
     with db_conn() as con:
@@ -1476,7 +1500,7 @@ async def api_my_join(request: Request):
     if not eid:
         return JSONResponse({"ok": True, "joined": False})
     e = get_event_by_id(eid)
-    if not e or not is_active_event(e.get("end")):
+    if not e or not is_active_event(e.get("end"), e.get("start")):
         return JSONResponse({"ok": True, "joined": False})
     with db_conn() as con:
         cnt = con.execute(
@@ -1901,7 +1925,7 @@ def get_joined_view(user_id: str):
     if not eid:
         return False, None, "", ""
     e = get_event_by_id(eid)
-    if not e or not is_active_event(e.get("end")):
+    if not e or not is_active_event(e.get("end"), e.get("start")):
         return False, None, "", ""
     with db_conn() as con:
         cnt = con.execute("SELECT COUNT(*) FROM event_participants WHERE event_id=?", (eid,)).fetchone()[0]
@@ -2450,8 +2474,8 @@ MIN_CHOICES = [f"{i:02d}" for i in range(0, 60, 5)]
 with gr.Blocks(css=CSS, title='오세요') as demo:
     with gr.Row(elem_classes=['header']):
         with gr.Column(scale=8):
-            gr.Markdown('## 지금 열린 곳으로 오세요')
-            gr.Markdown("<span style='color:#6b7280;font-size:13px'>원하면 지금 참여하세요</span>")
+            gr.Markdown('## 지금, 열려 있습니다')
+            gr.Markdown("<span style='color:#6b7280;font-size:13px'>편하면 오셔도 됩니다</span>")
         with gr.Column(scale=2, elem_classes=['logout']):
             gr.HTML("<div style='text-align:right'><a href='/logout'>로그아웃</a></div>")
 
@@ -2460,7 +2484,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
     with tabs:
         with gr.Tab('탐색'):
             gr.Markdown('### 열려 있는 활동', elem_classes=['section-title'])
-            gr.Markdown('참여중인 활동이 있을 때는 다른 활동에 참여할 수 없습니다.', elem_classes=['helper'])
+            gr.Markdown('참여하기는 1개 활동만 가능하다. 다른 활동에 참여하려면 먼저 빠지기를 해야 한다.', elem_classes=['helper'])
 
             joined_wrap = gr.Column(visible=False, elem_classes=['joined-box'])
             with joined_wrap:
@@ -2829,4 +2853,3 @@ app = gr.mount_gradio_app(app, demo, path='/app', show_api=False)
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=int(os.getenv('PORT','8000')))
-
