@@ -2407,8 +2407,8 @@ MIN_CHOICES = [f"{i:02d}" for i in range(0, 60, 5)]
 with gr.Blocks(css=CSS, title='오세요') as demo:
     with gr.Row(elem_classes=['header']):
         with gr.Column(scale=8):
-            gr.Markdown('## 지금, 열려 있습니다')
-            gr.Markdown("<span style='color:#6b7280;font-size:13px'>편하면 오셔도 됩니다</span>")
+            gr.Markdown('## 지금 열린 곳으로 오세요')
+            gr.Markdown("<span style='color:#6b7280;font-size:13px'>원하면 지금 참여하세요</span>")
         with gr.Column(scale=2, elem_classes=['logout']):
             gr.HTML("<div style='text-align:right'><a href='/logout'>로그아웃</a></div>")
 
@@ -2417,7 +2417,7 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
     with tabs:
         with gr.Tab('탐색'):
             gr.Markdown('### 열려 있는 활동', elem_classes=['section-title'])
-            gr.Markdown('참여하기는 1개 활동만 가능하다. 다른 활동에 참여하려면 먼저 빠지기를 해야 한다.', elem_classes=['helper'])
+            gr.Markdown('참여중인 활동이 있을 때는 다른 활동에 참여할 수 없습니다.', elem_classes=['helper'])
 
             joined_wrap = gr.Column(visible=False, elem_classes=['joined-box'])
             with joined_wrap:
@@ -2786,3 +2786,4 @@ app = gr.mount_gradio_app(app, demo, path='/app', show_api=False)
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=int(os.getenv('PORT','8000')))
+
