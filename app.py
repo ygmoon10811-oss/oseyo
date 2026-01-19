@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: UI_FIX_V15_FAB_MODAL_DATE ###", flush=True)
+print("### DEPLOY MARKER: HIDE_ENDED_V4 ###", flush=True)
 import os
 import io
 import re
@@ -375,18 +375,24 @@ def parse_dt(s, assume_end: bool = False):
     if not s:
         return None
 
-    # --- Normalize common ISO variants ---
+    # --- Normalize common variants ---
     # 1) Trailing 'Z' (UTC) -> '+00:00'
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
 
-    # 2) Some strings come as 'YYYY-MM-DD HH:MM+09:00' (space instead of 'T')
+    # 2) Compact date + time with a space: 'YYYYMMDD HH:MM' or 'YYYYMMDD HH:MM:SS'
+    m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$", s)
+    if m:
+        y, mo, d, hh, mm, ss = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)
+        return datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss or 0), tzinfo=KST)
+
+    # 3) Some strings come as 'YYYY-MM-DD HH:MM+09:00' (space instead of 'T')
     if " " in s and ("+" in s[10:] or "-" in s[10:]):
         head, tail = s.split(" ", 1)
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", head):
             s = head + "T" + tail
 
-    # --- Parse ---
+    # --- Parse (ISO first) ---
     try:
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
@@ -401,6 +407,7 @@ def parse_dt(s, assume_end: bool = False):
     except Exception:
         pass
 
+    # --- Fallback strptime formats ---
     for fmt in _DT_FORMATS:
         try:
             dt = datetime.strptime(s, fmt).replace(tzinfo=KST)
@@ -409,20 +416,30 @@ def parse_dt(s, assume_end: bool = False):
             return dt
         except Exception:
             continue
+
     return None
 
 
 def is_active_event(end_s):
-    end_dt = parse_dt(end_s, assume_end=True)
-    if end_dt is None:
+    # end가 비어있으면(미설정) 계속 노출
+    if end_s is None or str(end_s).strip() == '':
         return True
+
+    end_dt = parse_dt(end_s, assume_end=True)
+    # end가 있는데도 파싱이 안 되면: 보수적으로 '종료'로 간주해서 숨김
+    if end_dt is None:
+        return False
     return end_dt >= now_kst()
 
 
+
 def remain_text(end_s):
+    if end_s is None or str(end_s).strip() == '':
+        return ''
+
     end_dt = parse_dt(end_s, assume_end=True)
     if end_dt is None:
-        return ""
+        return '종료됨'
     delta = end_dt - now_kst()
     if delta.total_seconds() <= 0:
         return "종료됨"
