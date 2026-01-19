@@ -6,7 +6,6 @@ import re
 import uuid
 import json
 import base64
-import csv
 import sqlite3
 import hashlib
 import html
@@ -14,8 +13,9 @@ from datetime import datetime, timedelta, timezone
 
 import uvicorn
 
-from fastapi import FastAPI, Request, Form, Query
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response, FileResponse
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
+
 import requests
 from PIL import Image
 
@@ -361,10 +361,14 @@ _DT_FORMATS = [
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%dT%H:%M",
     "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d",          # date only
+    "%Y%m%d",            # compact date
+    "%Y%m%d%H%M",        # compact datetime (no separators)
+    "%Y%m%d%H%M%S",      # compact datetime with seconds
 ]
 
 
-def parse_dt(s):
+def parse_dt(s, assume_end: bool = False):
     if not s:
         return None
     s = str(s).strip()
@@ -372,44 +376,51 @@ def parse_dt(s):
         return None
 
     # --- Normalize common ISO variants ---
-    # 1) Trailing 'Z' (UTC) -> '+00:00' so datetime.fromisoformat can parse it.
+    # 1) Trailing 'Z' (UTC) -> '+00:00'
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
 
     # 2) Some strings come as 'YYYY-MM-DD HH:MM+09:00' (space instead of 'T')
-    #    If it looks like there is a timezone offset, replace the first space with 'T'.
-    if " " in s and ("+" in s or "-" in s[10:]):
+    if " " in s and ("+" in s[10:] or "-" in s[10:]):
         head, tail = s.split(" ", 1)
-        if head.count("-") == 2 and (("+" in tail) or ("-" in tail[5:])):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", head):
             s = head + "T" + tail
 
-    # 3) If it is 'YYYY-MM-DD HH:MM' style, leave it for strptime fallback.
-
+    # --- Parse ---
     try:
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=KST)
-        return dt.astimezone(KST)
+            dt = dt.replace(tzinfo=KST)
+        else:
+            dt = dt.astimezone(KST)
+
+        # If end is date-only, treat as end-of-day
+        if assume_end and (re.fullmatch(r"\d{4}-\d{2}-\d{2}", s) or re.fullmatch(r"\d{8}", s)):
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt
     except Exception:
         pass
 
     for fmt in _DT_FORMATS:
         try:
-            dt = datetime.strptime(s, fmt)
-            return dt.replace(tzinfo=KST)
+            dt = datetime.strptime(s, fmt).replace(tzinfo=KST)
+            if assume_end and fmt in ("%Y-%m-%d", "%Y%m%d"):
+                dt = dt.replace(hour=23, minute=59, second=59)
+            return dt
         except Exception:
             continue
     return None
 
+
 def is_active_event(end_s):
-    end_dt = parse_dt(end_s)
+    end_dt = parse_dt(end_s, assume_end=True)
     if end_dt is None:
         return True
     return end_dt >= now_kst()
 
 
 def remain_text(end_s):
-    end_dt = parse_dt(end_s)
+    end_dt = parse_dt(end_s, assume_end=True)
     if end_dt is None:
         return ""
     delta = end_dt - now_kst()
@@ -797,72 +808,12 @@ async def root_redirect():
 async def healthz():
     # Render health check endpoint (must return 200 without auth)
     return {"ok": True}
-
-# --- BEGIN: Admin DB export (for local inspection) ---
-ADMIN_DB_TOKEN = os.getenv("ADMIN_DB_TOKEN", "").strip()
-
-def _admin_auth(token: str) -> bool:
-    return bool(ADMIN_DB_TOKEN) and (token == ADMIN_DB_TOKEN)
-
-@app.get("/admin/db")
-async def admin_download_db(token: str = Query("")):
-    # Return the SQLite DB file. Protected by ADMIN_DB_TOKEN.
-    if not _admin_auth(token):
-        return JSONResponse({"ok": False, "message": "unauthorized"}, status_code=401)
-    return FileResponse(
-        DB_PATH,
-        media_type="application/octet-stream",
-        filename=os.path.basename(DB_PATH),
-    )
-
-@app.get("/admin/users.csv")
-async def admin_users_csv(token: str = Query("")):
-    if not _admin_auth(token):
-        return JSONResponse({"ok": False, "message": "unauthorized"}, status_code=401)
-    import io as _io
-    buf = _io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["id", "email", "name", "gender", "birth", "created_at"])
-    with db_conn() as con:
-        rows = con.execute(
-            "SELECT id, email, name, gender, birth, created_at FROM users ORDER BY created_at DESC"
-        ).fetchall()
-    w.writerows(rows)
-    return Response(
-        content=buf.getvalue(),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=users.csv"},
-    )
-
-@app.get("/admin/events.csv")
-async def admin_events_csv(token: str = Query("")):
-    if not _admin_auth(token):
-        return JSONResponse({"ok": False, "message": "unauthorized"}, status_code=401)
-    import io as _io
-    buf = _io.StringIO()
-    w = csv.writer(buf)
-    w.writerow([
-        "id", "title", "start", "end", "addr", "lat", "lng", "created_at", "user_id", "capacity", "is_unlimited"
-    ])
-    with db_conn() as con:
-        rows = con.execute(
-            "SELECT id, title, start, end, addr, lat, lng, created_at, user_id, capacity, is_unlimited FROM events ORDER BY created_at DESC"
-        ).fetchall()
-    w.writerows(rows)
-    return Response(
-        content=buf.getvalue(),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=events.csv"},
-    )
-# --- END: Admin DB export ---
-
 PUBLIC_PATH_PREFIXES = (
     "/login",
     "/signup",
     "/send_email_otp",
     "/static",
     "/healthz",
-    "/admin",
 
 )
 
