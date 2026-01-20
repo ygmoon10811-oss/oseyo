@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-print("### DEPLOY MARKER: V19_FAV_MANUAL_FAB_VISIBLE ###", flush=True)
+print("### DEPLOY MARKER: V20_ENDDATE_DEFAULT_STARTDATE ###", flush=True)
 import os
 import io
 import re
@@ -2362,7 +2362,20 @@ def save_event(
             lat, lng = got
 
     start_s = _combine_date_time(start_date, start_hour, start_min)
-    end_s = _combine_date_time(end_date, end_hour, end_min)
+
+    # 종료 날짜를 비워둔 채로 종료 시/분만 설정하는 UX가 많다.
+    # end_date가 비어있으면 기본적으로 start_date를 사용하도록 보정한다.
+    # (단, end 시/분이 start 시/분과 동일하면 '종료 미설정'으로 간주)
+    _end_date = end_date
+    if not _end_date:
+        sh = str(start_hour).zfill(2)[:2]
+        sm = str(start_min).zfill(2)[:2]
+        eh = str(end_hour).zfill(2)[:2]
+        em = str(end_min).zfill(2)[:2]
+        if (eh != sh) or (em != sm):
+            _end_date = start_date
+
+    end_s = _combine_date_time(_end_date, end_hour, end_min)
 
     sdt = parse_dt(start_s)
     edt = parse_dt(end_s)
