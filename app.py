@@ -2609,8 +2609,21 @@ button#fab_btn:hover,
 HOUR_CHOICES = [f"{i:02d}" for i in range(24)]
 MIN_CHOICES = [f"{i:02d}" for i in range(0, 60, 5)]
 
+# app.py 상단이나 Blocks 직전에 추가
+custom_css = """
+.floating-btn {
+    position: fixed !important;
+    bottom: 20px !important;
+    right: 20px !important;
+    border-radius: 50% !important;
+    width: 60px !important;
+    height: 60px !important;
+    z-index: 9999 !important;
+}
+/* 필요한 다른 CSS들도 여기에 추가 */
+"""
 
-with gr.Blocks(css=CSS, title='오세요') as demo:
+with gr.Blocks(css=custom_css) as demo:
     with gr.Row(elem_classes=['header']):
         with gr.Column(scale=8):
             gr.Markdown('## 지금, 열려 있는 곳으로 오세요')
@@ -2988,10 +3001,11 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
         ],
     ).then(fn=_touch_map_signal, inputs=None, outputs=[map_signal])
 
-app = gr.mount_gradio_app(app, demo, path='/app')
+app = gr.mount_gradio_app(app, demo, path="/app", allowed_paths=["."])
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=int(os.getenv('PORT','8000')))
+
 
 
 
