@@ -2988,9 +2988,10 @@ with gr.Blocks(css=CSS, title='오세요') as demo:
         ],
     ).then(fn=_touch_map_signal, inputs=None, outputs=[map_signal])
 
-app = gr.mount_gradio_app(app, demo, path='/app', show_api=False)
+app = gr.mount_gradio_app(app, demo, path='/app')
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=int(os.getenv('PORT','8000')))
+
 
 
