@@ -1298,7 +1298,7 @@ async def send_email_otp(request: Request):
         # SMTP 환경변수 확인
         SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
         SMTP_USER = os.getenv("SMTP_USER", "").strip()
-        SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
+        SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
         FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER).strip()
         
         SMTP_PORT_RAW = (os.getenv("SMTP_PORT", "587") or "587").strip()
@@ -1311,7 +1311,7 @@ async def send_email_otp(request: Request):
             )
 
         # 환경변수가 설정되지 않은 경우
-        if not (SMTP_HOST and SMTP_USER and SMTP_PASS and FROM_EMAIL):
+        if not (SMTP_HOST and SMTP_USER and SMTP_PASSWORD and FROM_EMAIL):
             return JSONResponse(
                 {"ok": False, "message": "SMTP 환경변수가 설정되지 않았습니다."}, 
                 status_code=200
@@ -1346,7 +1346,7 @@ async def send_email_otp(request: Request):
 
             with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as s:
                 s.starttls()
-                s.login(SMTP_USER, SMTP_PASS)
+                s.login(SMTP_USER, SMTP_PASSWORD)
                 s.send_message(msg)
 
         except Exception as e:
@@ -2992,6 +2992,7 @@ app = gr.mount_gradio_app(app, demo, path='/app')
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=int(os.getenv('PORT','8000')))
+
 
 
 
