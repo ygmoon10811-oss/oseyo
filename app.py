@@ -835,7 +835,7 @@ def ensure_event_coords(event: dict):
 # =========================================================
 # 7) FastAPI 앱 (로그인/회원가입/지도/JSON API)
 # =========================================================
-app = FastAPI()
+app = FastAPI(debug=True)
 
 
 @app.get("/")
@@ -2992,4 +2992,5 @@ app = gr.mount_gradio_app(app, demo, path='/app', show_api=False)
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=int(os.getenv('PORT','8000')))
+
 
