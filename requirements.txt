@@ -6,3 +6,4 @@ Pillow
 gradio
 gradio_client
 gunicorn
+psycopg2-binary
