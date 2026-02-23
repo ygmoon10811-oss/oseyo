@@ -12,12 +12,11 @@ from contextlib import contextmanager
 import gradio as gr
 
 # =========================================================
-# 0) 환경 설정 및 DB 연결 (PostgreSQL/Supabase)
+# 0) DB 연결 설정
 # =========================================================
 KST = timezone(timedelta(hours=9))
 def now_kst(): return datetime.now(KST)
 
-KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "").strip()
 KAKAO_JAVASCRIPT_KEY = os.getenv("KAKAO_JAVASCRIPT_KEY", "").strip()
 COOKIE_NAME = "oseyo_session"
 SESSION_HOURS = 24 * 7
@@ -28,11 +27,10 @@ try:
     if DATABASE_URL:
         db_pool = pool.ThreadedConnectionPool(1, 20, dsn=DATABASE_URL)
 except Exception as e:
-    print(f"DB Connection Error: {e}")
+    print(f"DB Error: {e}")
 
 @contextmanager
 def get_cursor():
-    global db_pool
     conn = db_pool.getconn()
     try:
         with conn.cursor() as cur: yield cur
@@ -43,21 +41,8 @@ def get_cursor():
     finally:
         db_pool.putconn(conn)
 
-def init_db():
-    try:
-        with get_cursor() as cur:
-            cur.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE, pw_hash TEXT, name TEXT, gender TEXT, birth TEXT, created_at TEXT);")
-            cur.execute("CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT, expires_at TEXT);")
-            cur.execute("CREATE TABLE IF NOT EXISTS email_otps (email TEXT PRIMARY KEY, otp TEXT, expires_at TEXT);")
-            cur.execute('CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, title TEXT, photo TEXT, "start" TEXT, "end" TEXT, addr TEXT, lat DOUBLE PRECISION, lng DOUBLE PRECISION, created_at TEXT, user_id TEXT, capacity INTEGER DEFAULT 10, is_unlimited INTEGER DEFAULT 0);')
-            cur.execute("CREATE TABLE IF NOT EXISTS favs (name TEXT PRIMARY KEY, count INTEGER DEFAULT 1);")
-            cur.execute("CREATE TABLE IF NOT EXISTS event_participants (event_id TEXT, user_id TEXT, joined_at TEXT, PRIMARY KEY(event_id, user_id));")
-    except: pass
-
-if db_pool: init_db()
-
 # =========================================================
-# 1) 유틸리티 (보안, 이미지, 날짜)
+# 1) 유틸리티 (암호, 이미지, 날짜)
 # =========================================================
 def pw_hash(password, salt):
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 150_000)
@@ -94,12 +79,11 @@ def remain_text(end_s, start_s=None):
         if not end_s: edt = edt.replace(hour=23, minute=59)
         if edt < now: return "종료됨"
         m = int((edt - now).total_seconds() // 60)
-        if m > 1440: return f"남음 {m//1440}일"
-        return f"남음 {m//60}시간" if m > 60 else f"남음 {m}분"
+        return f"남음 {m//1440}일 { (m//60)%24 }시간" if m > 60 else f"남음 {m}분"
     except: return ""
 
 # =========================================================
-# 2) FastAPI 라우팅 (로그인, 회원가입, 404 방지)
+# 2) FastAPI 라우팅 (로그인, 회원가입)
 # =========================================================
 app = FastAPI(redirect_slashes=False)
 
@@ -114,24 +98,15 @@ def get_user_id_from_req(request: Request):
     except: pass
     return None
 
-LOGIN_HTML = """
-<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/><title>로그인</title>
-<style>body{font-family:Pretendard,sans-serif;background:#FAF9F6;display:flex;justify-content:center;padding-top:60px;margin:0;}.card{background:#fff;border:1px solid #E5E3DD;border-radius:20px;padding:30px;width:90%;max-width:360px;box-shadow:0 10px 25px rgba(0,0,0,0.05);}h1{font-size:24px;margin-bottom:20px;font-weight:800;text-align:center;}input{width:100%;padding:14px;border:1px solid #e5e7eb;border-radius:12px;margin-bottom:15px;box-sizing:border-box;font-size:15px;outline:none;}.btn{width:100%;padding:15px;background:#111;color:#fff;border:0;border-radius:12px;cursor:pointer;font-weight:bold;font-size:16px;}.err{color:#ef4444;font-size:13px;margin-bottom:10px;text-align:center;}</style></head>
-<body><div class="card"><h1>로그인</h1><form method="post" action="/login"><input name="email" type="email" placeholder="이메일" required/><input name="password" type="password" placeholder="비밀번호" required/><div class="err">__ERROR_BLOCK__</div><button class="btn">로그인</button></form><div style="text-align:center;margin-top:20px;font-size:14px;color:#888;">계정이 없으신가요? <a href="/signup" style="color:#111;font-weight:bold;text-decoration:none;">회원가입</a></div></div></body></html>
-"""
+LOGIN_HTML = """<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/><title>로그인</title><style>body{font-family:Pretendard,sans-serif;background:#FAF9F6;display:flex;justify-content:center;padding-top:50px;margin:0;}.card{background:#fff;border:1px solid #E5E3DD;border-radius:20px;padding:30px;width:90%;max-width:360px;box-shadow:0 10px 25px rgba(0,0,0,0.05);}h1{font-size:24px;margin-bottom:20px;font-weight:800;text-align:center;}input{width:100%;padding:14px;border:1px solid #e5e7eb;border-radius:12px;margin-bottom:15px;box-sizing:border-box;font-size:15px;outline:none;}.btn{width:100%;padding:15px;background:#111;color:#fff;border:0;border-radius:12px;cursor:pointer;font-weight:bold;font-size:16px;}.err{color:#ef4444;font-size:13px;margin-bottom:10px;text-align:center;}</style></head><body><div class="card"><h1>로그인</h1><form method="post" action="/login"><input name="email" type="email" placeholder="이메일" required/><input name="password" type="password" placeholder="비밀번호" required/><div class="err">__ERROR_BLOCK__</div><button class="btn">로그인</button></form><div style="text-align:center;margin-top:20px;font-size:14px;color:#888;">계정이 없으신가요? <a href="/signup" style="color:#111;font-weight:bold;text-decoration:none;">회원가입</a></div></div></body></html>"""
 
-SIGNUP_HTML = """
-<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>회원가입</title>
-<style>body{font-family:Pretendard,sans-serif;background:#FAF9F6;display:flex;justify-content:center;padding:30px 10px;} .card{background:#fff;border:1px solid #E5E3DD;border-radius:20px;padding:25px;width:100%;max-width:440px;} .row{display:flex;gap:8px;align-items:center;} input,select{padding:12px;border:1px solid #e5e7eb;border-radius:10px;box-sizing:border-box;margin-bottom:10px;font-size:15px;outline:none;} .btn{width:100%;padding:15px;background:#111;color:#fff;border:0;border-radius:12px;cursor:pointer;margin-top:10px;font-weight:bold;} .terms{background:#f9fafb;padding:12px;border-radius:10px;font-size:13px;margin-top:10px;border:1px solid #e5e7eb;}</style></head>
-<body><div class="card"><h1>회원가입</h1><form method="post" action="/signup" onsubmit="combineEmail()"><label style="font-size:13px;color:#666;">이메일</label><div class="row"><input id="eid" type="text" placeholder="아이디" required style="flex:1.5;"/><span style="font-weight:bold;color:#888;">@</span><select id="edom" style="flex:1.2;"><option value="naver.com">naver.com</option><option value="gmail.com">gmail.com</option><option value="kakao.com">kakao.com</option></select></div><input type="hidden" id="fem" name="email"/><button type="button" onclick="sendOtp()" style="padding:8px;cursor:pointer;margin-bottom:10px;">인증발송</button><div id="omsg" style="font-size:12px;color:blue;margin-bottom:10px;"></div><input name="otp" placeholder="인증번호" required/><input name="password" type="password" placeholder="비밀번호" required/><input name="name" placeholder="이름" required/><div class="terms"><label><input type="checkbox" required/> (필수) 만 14세 이상</label><br/><label><input type="checkbox" required/> (필수) 이용약관 동의</label></div><button class="btn">회원가입 완료</button></form></div><script>function combineEmail(){document.getElementById('fem').value=document.getElementById('eid').value+'@'+document.getElementById('edom').value;}async function sendOtp(){combineEmail(); const em=document.getElementById('fem').value; if(!document.getElementById('eid').value)return; document.getElementById('omsg').innerText='발송 중...'; const r=await fetch('/send_email_otp',{method:'POST',body:JSON.stringify({email:em})}); const d=await r.json(); document.getElementById('omsg').innerText=d.ok?'발송됨':'실패';}</script></body></html>
-"""
+SIGNUP_HTML = """<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>회원가입</title><style>body{font-family:Pretendard,sans-serif;background:#FAF9F6;display:flex;justify-content:center;padding:30px 10px;} .card{background:#fff;border:1px solid #E5E3DD;border-radius:20px;padding:25px;width:100%;max-width:440px;} .row{display:flex;gap:8px;align-items:center;} input,select{padding:12px;border:1px solid #e5e7eb;border-radius:10px;box-sizing:border-box;margin-bottom:10px;font-size:15px;outline:none;} .btn{width:100%;padding:15px;background:#111;color:#fff;border:0;border-radius:12px;cursor:pointer;margin-top:10px;font-weight:bold;} .terms{background:#f9fafb;padding:12px;border-radius:10px;font-size:13px;margin-top:10px;border:1px solid #e5e7eb;}</style></head><body><div class="card"><h1>회원가입</h1><form method="post" action="/signup" onsubmit="combineEmail()"><div class="row"><input id="eid" type="text" placeholder="아이디" required style="flex:1.5;"/><span style="font-weight:bold;color:#888;">@</span><select id="edom" style="flex:1.2;"><option value="naver.com">naver.com</option><option value="gmail.com">gmail.com</option><option value="kakao.com">kakao.com</option></select></div><input type="hidden" id="fem" name="email"/><button type="button" onclick="sendOtp()" style="padding:8px;cursor:pointer;margin-bottom:10px;">인증발송</button><div id="omsg" style="font-size:12px;color:blue;margin-bottom:10px;"></div><input name="otp" placeholder="인증번호" required/><input name="password" type="password" placeholder="비밀번호" required/><input name="name" placeholder="이름" required/><div class="terms"><label><input type="checkbox" required/> (필수) 만 14세 이상</label><br/><label><input type="checkbox" required/> (필수) 이용약관 동의</label></div><button class="btn">가입 완료</button></form></div><script>function combineEmail(){document.getElementById('fem').value=document.getElementById('eid').value+'@'+document.getElementById('edom').value;}async function sendOtp(){combineEmail(); const em=document.getElementById('fem').value; if(!document.getElementById('eid').value)return; document.getElementById('omsg').innerText='발송 중...'; const r=await fetch('/send_email_otp',{method:'POST',body:JSON.stringify({email:em})}); const d=await r.json(); document.getElementById('omsg').innerText=d.ok?'발송됨':'실패';}</script></body></html>"""
 
 @app.get("/healthz")
 async def healthz(): return {"status": "ok"}
 
 @app.get("/login")
-async def login_get(err: str = ""):
-    return HTMLResponse(LOGIN_HTML.replace("__ERROR_BLOCK__", err))
+async def login_get(err: str = ""): return HTMLResponse(LOGIN_HTML.replace("__ERROR_BLOCK__", err))
 
 @app.post("/login")
 async def login_post(email: str = Form(...), password: str = Form(...)):
@@ -175,7 +150,7 @@ async def signup_post(email: str = Form(...), otp: str = Form(...), password: st
 @app.get("/")
 async def pwa_shell(request: Request):
     if not get_user_id_from_req(request): return RedirectResponse(url="/login", status_code=303)
-    return HTMLResponse('<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/><link rel="manifest" href="/static/manifest.webmanifest"/><title>오세요</title><style>html,body{height:100%;margin:0;background:#FAF9F6;overflow:hidden;}iframe{border:0;width:100%;height:100%;vertical-align:bottom;}</style></head><body><iframe src="/app" title="main"></iframe></body></html>')
+    return HTMLResponse('<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/><link rel="manifest" href="/static/manifest.webmanifest"/><title>오세요</title><style>html,body{height:100%;margin:0;background:#FAF9F6;overflow:hidden;}iframe{border:0;width:100%;height:100%;vertical-align:bottom;}</style></head><body><iframe src="/app/" title="main"></iframe></body></html>')
 
 @app.get("/logout")
 async def logout(request: Request):
@@ -187,10 +162,10 @@ async def logout(request: Request):
     return resp
 
 # =========================================================
-# 3) Gradio UI (60개 카드 복구)
+# 3) Gradio 인터페이스 (60개 카드)
 # =========================================================
 MAX_CARDS = 60
-CSS = r":root{--accent:#ff5a1f}.event-card{background:white;border:1px solid #E5E3DD;border-radius:18px;padding:14px;box-shadow:0 8px 22px rgba(0,0,0,0.06);margin-bottom:12px;}.event-img img{border-radius:14px!important;height:180px!important;object-fit:cover!important;}#fab_btn{position:fixed;right:22px;bottom:22px;z-index:9999;width:56px;height:56px;border-radius:999px;background:#ff5a1f;color:white;font-size:28px;border:0;box-shadow:0 10px 20px rgba(0,0,0,0.2);cursor:pointer;}.main-modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:90%;max-width:500px;background:white;border-radius:20px;z-index:70;padding:20px;box-shadow:0 20px 50px rgba(0,0,0,0.2);}"
+CSS = r":root{--accent:#ff5a1f}.event-card{background:white;border:1px solid #E5E3DD;border-radius:18px;padding:14px;box-shadow:0 8px 22px rgba(0,0,0,0.06);margin-bottom:12px;}.event-img img{border-radius:14px!important;height:180px!important;object-fit:cover!important;}#fab_btn{position:fixed;right:22px;bottom:22px;z-index:9999;width:56px;height:56px;border-radius:999px;background:#ff5a1f;color:white;font-size:28px;border:0;box-shadow:0 10px 20px rgba(0,0,0,0.2);cursor:pointer;}"
 
 def refresh_view(req: gr.Request):
     uid = get_user_id_from_req(req.request)
@@ -206,7 +181,6 @@ def refresh_view(req: gr.Request):
                 joined = cur.fetchone() is not None
                 events.append({'id':r[0],'title':r[1],'photo':r[2],'start':r[3],'end':r[4],'addr':r[5],'cap':r[6],'unlim':r[7],'cnt':cnt,'joined':joined})
     except: pass
-
     updates = []
     for i in range(MAX_CARDS):
         if i < len(events):
@@ -229,17 +203,9 @@ def toggle_join_gr(eid, req: gr.Request):
     except: pass
     return refresh_view(req)
 
-def save_event_gr(title, img, addr, cap, unlim, req: gr.Request):
-    uid = get_user_id_from_req(req.request)
-    if not title or not addr: return gr.update(visible=True)
-    try:
-        photo_b64 = encode_img_to_b64(img); eid = uuid.uuid4().hex
-        with get_cursor() as cur:
-            cur.execute('INSERT INTO events (id,title,photo,"start","end",addr,lat,lng,created_at,user_id,capacity,is_unlimited) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)', (eid, title, photo_b64, now_kst().isoformat(), (now_kst()+timedelta(hours=2)).isoformat(), addr, 36.0, 129.0, now_kst().isoformat(), uid, int(cap), 1 if unlim else 0))
-        return gr.update(visible=False)
-    except: return gr.update(visible=True)
-
-with gr.Blocks(css=CSS, title="오세요") as demo:
+# Gradio 생성 (CSS 파라미터는 제거 - launch에서 처리)
+with gr.Blocks(title="오세요") as demo:
+    gr.HTML(f"<style>{CSS}</style>") # CSS를 내부 HTML로 삽입
     with gr.Row():
         gr.Markdown("# 📍 지금 오세요")
         gr.HTML("<div style='text-align:right'><a href='/logout' target='_parent' style='color:#888;text-decoration:none;font-size:12px;'>로그아웃</a></div>")
@@ -250,21 +216,21 @@ with gr.Blocks(css=CSS, title="오세요") as demo:
                 img=gr.Image(show_label=False, interactive=False, elem_classes=["event-img"]); title=gr.Markdown(); meta=gr.Markdown(); hid=gr.Textbox(visible=False); btn=gr.Button("참여하기", elem_classes=["join-btn"])
                 card_boxes.append(box); card_imgs.append(img); card_titles.append(title); card_metas.append(meta); card_ids.append(hid); card_btns.append(btn)
     fab = gr.Button("＋", elem_id="fab_btn")
-    with gr.Column(visible=False, elem_classes=["main-modal"]) as modal:
-        gr.Markdown("### 📝 활동 만들기")
-        t = gr.Textbox(label="활동명"); img_in = gr.Image(label="사진", type="numpy"); a = gr.Textbox(label="장소")
-        with gr.Row(): cp = gr.Slider(1, 50, 10, label="정원"); un = gr.Checkbox(label="제한없음")
-        with gr.Row(): sub = gr.Button("등록", variant="primary"); cls = gr.Button("닫기")
     demo.load(refresh_view, outputs=card_boxes + card_imgs + card_titles + card_metas + card_ids + card_btns)
-    fab.click(lambda: gr.update(visible=True), outputs=modal)
-    cls.click(lambda: gr.update(visible=False), outputs=modal)
-    sub.click(save_event_gr, [t, img_in, a, cp, un], modal).then(refresh_view, outputs=card_boxes + card_imgs + card_titles + card_metas + card_ids + card_btns)
     for i in range(MAX_CARDS): card_btns[i].click(toggle_join_gr, inputs=[card_ids[i]], outputs=card_boxes + card_imgs + card_titles + card_metas + card_ids + card_btns)
 
-# 4) 최종 실행
+# =========================================================
+# 4) 마운트 및 실행
+# =========================================================
+# 1. Gradio 마운트 (반드시 /app/ 로 호출되도록 trailing slash 보장)
 app = gr.mount_gradio_app(app, demo, path="/app")
-try: app.mount("/static", StaticFiles(directory="static"), name="static")
-except: pass
+
+# 2. 정적 파일 마운트 (아이콘 404 해결)
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+    # /icons 경로로 들어오는 것도 static/icons에서 찾도록 추가 마운트
+    if os.path.exists("static/icons"):
+        app.mount("/icons", StaticFiles(directory="static/icons"), name="icons")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
