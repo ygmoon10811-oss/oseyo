@@ -12,7 +12,7 @@ from contextlib import contextmanager
 import gradio as gr
 
 # =========================================================
-# 0) 환경 설정 및 DB 연결
+# 0) 환경 설정 및 DB 연결 (PostgreSQL/Supabase)
 # =========================================================
 KST = timezone(timedelta(hours=9))
 def now_kst(): return datetime.now(KST)
@@ -32,6 +32,7 @@ except Exception as e:
 
 @contextmanager
 def get_cursor():
+    global db_pool
     conn = db_pool.getconn()
     try:
         with conn.cursor() as cur: yield cur
@@ -56,7 +57,7 @@ def init_db():
 if db_pool: init_db()
 
 # =========================================================
-# 1) 유틸리티 함수
+# 1) 유틸리티 (보안, 이미지, 날짜)
 # =========================================================
 def pw_hash(password, salt):
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 150_000)
@@ -70,10 +71,12 @@ def pw_verify(password, stored):
 
 def encode_img_to_b64(img_np):
     if img_np is None: return ""
-    im = Image.fromarray(img_np.astype("uint8")).convert("RGB")
-    buf = io.BytesIO()
-    im.save(buf, format="JPEG", quality=80)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
+    try:
+        im = Image.fromarray(img_np.astype("uint8")).convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=80)
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except: return ""
 
 def decode_photo(photo_b64):
     if not photo_b64: return None
@@ -96,109 +99,31 @@ def remain_text(end_s, start_s=None):
     except: return ""
 
 # =========================================================
-# 2) FastAPI 앱 설정 (가장 중요: 마운트 전 경로 정의)
+# 2) FastAPI 라우팅 (로그인, 회원가입, 404 방지)
 # =========================================================
 app = FastAPI(redirect_slashes=False)
 
 def get_user_id_from_req(request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    if not token: return None
+    t = request.cookies.get(COOKIE_NAME)
+    if not t: return None
     try:
         with get_cursor() as cur:
-            cur.execute("SELECT user_id, expires_at FROM sessions WHERE token=%s", (token,))
+            cur.execute("SELECT user_id, expires_at FROM sessions WHERE token=%s", (t,))
             row = cur.fetchone()
             if row and datetime.fromisoformat(row[1]) > now_kst(): return row[0]
     except: pass
     return None
 
-# --- HTML 템플릿 ---
 LOGIN_HTML = """
-<!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-  <title>로그인</title>
-  <style>
-    body{font-family:Pretendard,sans-serif;background:#FAF9F6;display:flex;justify-content:center;padding-top:50px;margin:0;}
-    .card{background:#fff;border:1px solid #E5E3DD;border-radius:20px;padding:30px;width:90%;max-width:360px;box-shadow:0 10px 25px rgba(0,0,0,0.05);}
-    h1{font-size:24px;margin-bottom:20px;font-weight:800;text-align:center;}
-    input{width:100%;padding:14px;border:1px solid #e5e7eb;border-radius:12px;margin-bottom:15px;box-sizing:border-box;font-size:15px;outline:none;}
-    .btn{width:100%;padding:15px;background:#111;color:#fff;border:0;border-radius:12px;cursor:pointer;font-weight:bold;font-size:16px;}
-    .err{color:#ef4444;font-size:13px;margin-bottom:10px;text-align:center;}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>로그인</h1>
-    <form method="post" action="/login">
-      <input name="email" type="email" placeholder="이메일" required/>
-      <input name="password" type="password" placeholder="비밀번호" required/>
-      <div class="err">__ERROR_BLOCK__</div>
-      <button class="btn">로그인</button>
-    </form>
-    <div style="text-align:center;margin-top:20px;font-size:14px;color:#888;">계정이 없으신가요? <a href="/signup" style="color:#111;font-weight:bold;text-decoration:none;">회원가입</a></div>
-  </div>
-</body>
-</html>
+<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/><title>로그인</title>
+<style>body{font-family:Pretendard,sans-serif;background:#FAF9F6;display:flex;justify-content:center;padding-top:60px;margin:0;}.card{background:#fff;border:1px solid #E5E3DD;border-radius:20px;padding:30px;width:90%;max-width:360px;box-shadow:0 10px 25px rgba(0,0,0,0.05);}h1{font-size:24px;margin-bottom:20px;font-weight:800;text-align:center;}input{width:100%;padding:14px;border:1px solid #e5e7eb;border-radius:12px;margin-bottom:15px;box-sizing:border-box;font-size:15px;outline:none;}.btn{width:100%;padding:15px;background:#111;color:#fff;border:0;border-radius:12px;cursor:pointer;font-weight:bold;font-size:16px;}.err{color:#ef4444;font-size:13px;margin-bottom:10px;text-align:center;}</style></head>
+<body><div class="card"><h1>로그인</h1><form method="post" action="/login"><input name="email" type="email" placeholder="이메일" required/><input name="password" type="password" placeholder="비밀번호" required/><div class="err">__ERROR_BLOCK__</div><button class="btn">로그인</button></form><div style="text-align:center;margin-top:20px;font-size:14px;color:#888;">계정이 없으신가요? <a href="/signup" style="color:#111;font-weight:bold;text-decoration:none;">회원가입</a></div></div></body></html>
 """
 
 SIGNUP_HTML = """
-<!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>회원가입</title>
-  <style>
-    body{font-family:Pretendard,sans-serif;background:#FAF9F6;display:flex;justify-content:center;padding:30px 10px;}
-    .card{background:#fff;border:1px solid #E5E3DD;border-radius:20px;padding:25px;width:100%;max-width:440px;}
-    h1{font-size:22px;text-align:center;font-weight:800;}
-    .row{display:flex;gap:8px;align-items:center;}
-    input,select{padding:12px;border:1px solid #e5e7eb;border-radius:10px;box-sizing:border-box;margin-bottom:10px;font-size:15px;outline:none;}
-    .btn{width:100%;padding:15px;background:#111;color:#fff;border:0;border-radius:12px;cursor:pointer;margin-top:10px;font-weight:bold;}
-    .terms{background:#f9fafb;padding:12px;border-radius:10px;font-size:13px;margin-top:10px;border:1px solid #e5e7eb;}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>회원가입</h1>
-    <form method="post" action="/signup" onsubmit="combineEmail()">
-      <label style="font-size:13px;color:#666;">이메일 아이디</label>
-      <div class="email-row row">
-        <input id="eid" type="text" placeholder="아이디" required style="flex:1.5;"/>
-        <span style="font-weight:bold;color:#888;">@</span>
-        <select id="edom" style="flex:1.2;">
-          <option value="naver.com">naver.com</option>
-          <option value="gmail.com">gmail.com</option>
-          <option value="kakao.com">kakao.com</option>
-          <option value="daum.net">daum.net</option>
-        </select>
-      </div>
-      <input type="hidden" id="fem" name="email"/>
-      <button type="button" onclick="sendOtp()" style="padding:8px;cursor:pointer;margin-bottom:10px;">인증발송</button>
-      <div id="omsg" style="font-size:12px;color:blue;margin-bottom:10px;"></div>
-      <input name="otp" placeholder="인증번호 6자리" required/>
-      <input name="password" type="password" placeholder="비밀번호" required/>
-      <input name="name" placeholder="이름" required/>
-      <div class="terms">
-        <label><input type="checkbox" required/> (필수) 만 14세 이상입니다</label><br/>
-        <label><input type="checkbox" required/> (필수) 이용약관 및 개인정보 동의</label><br/>
-        <label><input type="checkbox" name="marketing"/> (선택) 마케팅 정보 수신 동의</label>
-      </div>
-      <button class="btn">가입 완료</button>
-    </form>
-  </div>
-  <script>
-    function combineEmail(){document.getElementById('fem').value=document.getElementById('eid').value+'@'+document.getElementById('edom').value;}
-    async function sendOtp(){
-      combineEmail(); const em=document.getElementById('fem').value;
-      if(!document.getElementById('eid').value){alert('아이디를 입력하세요'); return;}
-      document.getElementById('omsg').innerText='발송 중...';
-      const r=await fetch('/send_email_otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em})});
-      const d=await r.json(); document.getElementById('omsg').innerText=d.ok?'메일이 발송되었습니다.':'발송 실패';
-    }
-  </script>
-</body>
-</html>
+<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>회원가입</title>
+<style>body{font-family:Pretendard,sans-serif;background:#FAF9F6;display:flex;justify-content:center;padding:30px 10px;} .card{background:#fff;border:1px solid #E5E3DD;border-radius:20px;padding:25px;width:100%;max-width:440px;} .row{display:flex;gap:8px;align-items:center;} input,select{padding:12px;border:1px solid #e5e7eb;border-radius:10px;box-sizing:border-box;margin-bottom:10px;font-size:15px;outline:none;} .btn{width:100%;padding:15px;background:#111;color:#fff;border:0;border-radius:12px;cursor:pointer;margin-top:10px;font-weight:bold;} .terms{background:#f9fafb;padding:12px;border-radius:10px;font-size:13px;margin-top:10px;border:1px solid #e5e7eb;}</style></head>
+<body><div class="card"><h1>회원가입</h1><form method="post" action="/signup" onsubmit="combineEmail()"><label style="font-size:13px;color:#666;">이메일</label><div class="row"><input id="eid" type="text" placeholder="아이디" required style="flex:1.5;"/><span style="font-weight:bold;color:#888;">@</span><select id="edom" style="flex:1.2;"><option value="naver.com">naver.com</option><option value="gmail.com">gmail.com</option><option value="kakao.com">kakao.com</option></select></div><input type="hidden" id="fem" name="email"/><button type="button" onclick="sendOtp()" style="padding:8px;cursor:pointer;margin-bottom:10px;">인증발송</button><div id="omsg" style="font-size:12px;color:blue;margin-bottom:10px;"></div><input name="otp" placeholder="인증번호" required/><input name="password" type="password" placeholder="비밀번호" required/><input name="name" placeholder="이름" required/><div class="terms"><label><input type="checkbox" required/> (필수) 만 14세 이상</label><br/><label><input type="checkbox" required/> (필수) 이용약관 동의</label></div><button class="btn">회원가입 완료</button></form></div><script>function combineEmail(){document.getElementById('fem').value=document.getElementById('eid').value+'@'+document.getElementById('edom').value;}async function sendOtp(){combineEmail(); const em=document.getElementById('fem').value; if(!document.getElementById('eid').value)return; document.getElementById('omsg').innerText='발송 중...'; const r=await fetch('/send_email_otp',{method:'POST',body:JSON.stringify({email:em})}); const d=await r.json(); document.getElementById('omsg').innerText=d.ok?'발송됨':'실패';}</script></body></html>
 """
 
 @app.get("/healthz")
@@ -250,7 +175,7 @@ async def signup_post(email: str = Form(...), otp: str = Form(...), password: st
 @app.get("/")
 async def pwa_shell(request: Request):
     if not get_user_id_from_req(request): return RedirectResponse(url="/login", status_code=303)
-    return HTMLResponse(f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/><link rel="manifest" href="/static/manifest.webmanifest"/><title>오세요</title><style>html,body{{height:100%;margin:0;background:#FAF9F6;overflow:hidden;}}iframe{{border:0;width:100%;height:100%;vertical-align:bottom;}}</style></head><body><iframe src="/app" title="main"></iframe></body></html>""")
+    return HTMLResponse('<!doctype html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/><link rel="manifest" href="/static/manifest.webmanifest"/><title>오세요</title><style>html,body{height:100%;margin:0;background:#FAF9F6;overflow:hidden;}iframe{border:0;width:100%;height:100%;vertical-align:bottom;}</style></head><body><iframe src="/app" title="main"></iframe></body></html>')
 
 @app.get("/logout")
 async def logout(request: Request):
@@ -262,9 +187,84 @@ async def logout(request: Request):
     return resp
 
 # =========================================================
-# 3) Gradio 인터페이스 (60개 카드)
+# 3) Gradio UI (60개 카드 복구)
 # =========================================================
 MAX_CARDS = 60
-CSS = r":root{--accent:#ff5a1f}.event-card{background:white;border:1px solid #E5E3DD;border-radius:18px;padding:14px;box-shadow:0 8px 22px rgba(0,0,0,0.06);margin-bottom:12px;}.event-img img{border-radius:14px!important;height:180px!important;object-fit:cover!important;}#fab_btn{position:fixed;right:22px;bottom:22px;z-index:9999;width:56px;height:56px;border-radius:999px;background:#ff5a1f;color:white;font-size:28px;border:0;box-shadow:0 10px 20px rgba(0,0,0,0.2);cursor:pointer;}"
+CSS = r":root{--accent:#ff5a1f}.event-card{background:white;border:1px solid #E5E3DD;border-radius:18px;padding:14px;box-shadow:0 8px 22px rgba(0,0,0,0.06);margin-bottom:12px;}.event-img img{border-radius:14px!important;height:180px!important;object-fit:cover!important;}#fab_btn{position:fixed;right:22px;bottom:22px;z-index:9999;width:56px;height:56px;border-radius:999px;background:#ff5a1f;color:white;font-size:28px;border:0;box-shadow:0 10px 20px rgba(0,0,0,0.2);cursor:pointer;}.main-modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:90%;max-width:500px;background:white;border-radius:20px;z-index:70;padding:20px;box-shadow:0 20px 50px rgba(0,0,0,0.2);}"
 
-def refre
+def refresh_view(req: gr.Request):
+    uid = get_user_id_from_req(req.request)
+    events = []
+    try:
+        with get_cursor() as cur:
+            cur.execute('SELECT id,title,photo,"start","end",addr,capacity,is_unlimited FROM events ORDER BY created_at DESC LIMIT %s', (MAX_CARDS,))
+            rows = cur.fetchall()
+            for r in rows:
+                cur.execute("SELECT COUNT(*) FROM event_participants WHERE event_id=%s", (r[0],))
+                cnt = cur.fetchone()[0]
+                cur.execute("SELECT 1 FROM event_participants WHERE event_id=%s AND user_id=%s", (r[0], uid))
+                joined = cur.fetchone() is not None
+                events.append({'id':r[0],'title':r[1],'photo':r[2],'start':r[3],'end':r[4],'addr':r[5],'cap':r[6],'unlim':r[7],'cnt':cnt,'joined':joined})
+    except: pass
+
+    updates = []
+    for i in range(MAX_CARDS):
+        if i < len(events):
+            e = events[i]
+            cap_lab = "∞" if e['unlim'] == 1 else str(e['cap'] or "∞")
+            btn_txt = "빠지기" if e['joined'] else ("마감" if (cap_lab != "∞" and e['cnt'] >= int(cap_lab)) else "참여하기")
+            updates.extend([gr.update(visible=True), decode_photo(e['photo']), f"### {e['title']}", f"📍 {e['addr']}\n⏰ {fmt_start(e['start'])} · {remain_text(e['end'], e['start'])}\n👥 {e['cnt']}/{cap_lab}", e['id'], btn_txt])
+        else:
+            updates.extend([gr.update(visible=False), None, "", "", "", ""])
+    return tuple(updates)
+
+def toggle_join_gr(eid, req: gr.Request):
+    uid = get_user_id_from_req(req.request)
+    if not uid or not eid: return refresh_view(req)
+    try:
+        with get_cursor() as cur:
+            cur.execute("SELECT 1 FROM event_participants WHERE event_id=%s AND user_id=%s", (eid, uid))
+            if cur.fetchone(): cur.execute("DELETE FROM event_participants WHERE event_id=%s AND user_id=%s", (eid, uid))
+            else: cur.execute("INSERT INTO event_participants (event_id, user_id, joined_at) VALUES (%s, %s, %s)", (eid, uid, now_kst().isoformat()))
+    except: pass
+    return refresh_view(req)
+
+def save_event_gr(title, img, addr, cap, unlim, req: gr.Request):
+    uid = get_user_id_from_req(req.request)
+    if not title or not addr: return gr.update(visible=True)
+    try:
+        photo_b64 = encode_img_to_b64(img); eid = uuid.uuid4().hex
+        with get_cursor() as cur:
+            cur.execute('INSERT INTO events (id,title,photo,"start","end",addr,lat,lng,created_at,user_id,capacity,is_unlimited) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)', (eid, title, photo_b64, now_kst().isoformat(), (now_kst()+timedelta(hours=2)).isoformat(), addr, 36.0, 129.0, now_kst().isoformat(), uid, int(cap), 1 if unlim else 0))
+        return gr.update(visible=False)
+    except: return gr.update(visible=True)
+
+with gr.Blocks(css=CSS, title="오세요") as demo:
+    with gr.Row():
+        gr.Markdown("# 📍 지금 오세요")
+        gr.HTML("<div style='text-align:right'><a href='/logout' target='_parent' style='color:#888;text-decoration:none;font-size:12px;'>로그아웃</a></div>")
+    card_boxes=[]; card_imgs=[]; card_titles=[]; card_metas=[]; card_ids=[]; card_btns=[]
+    with gr.Row():
+        for i in range(MAX_CARDS):
+            with gr.Column(visible=False, elem_classes=["event-card"], min_width=300) as box:
+                img=gr.Image(show_label=False, interactive=False, elem_classes=["event-img"]); title=gr.Markdown(); meta=gr.Markdown(); hid=gr.Textbox(visible=False); btn=gr.Button("참여하기", elem_classes=["join-btn"])
+                card_boxes.append(box); card_imgs.append(img); card_titles.append(title); card_metas.append(meta); card_ids.append(hid); card_btns.append(btn)
+    fab = gr.Button("＋", elem_id="fab_btn")
+    with gr.Column(visible=False, elem_classes=["main-modal"]) as modal:
+        gr.Markdown("### 📝 활동 만들기")
+        t = gr.Textbox(label="활동명"); img_in = gr.Image(label="사진", type="numpy"); a = gr.Textbox(label="장소")
+        with gr.Row(): cp = gr.Slider(1, 50, 10, label="정원"); un = gr.Checkbox(label="제한없음")
+        with gr.Row(): sub = gr.Button("등록", variant="primary"); cls = gr.Button("닫기")
+    demo.load(refresh_view, outputs=card_boxes + card_imgs + card_titles + card_metas + card_ids + card_btns)
+    fab.click(lambda: gr.update(visible=True), outputs=modal)
+    cls.click(lambda: gr.update(visible=False), outputs=modal)
+    sub.click(save_event_gr, [t, img_in, a, cp, un], modal).then(refresh_view, outputs=card_boxes + card_imgs + card_titles + card_metas + card_ids + card_btns)
+    for i in range(MAX_CARDS): card_btns[i].click(toggle_join_gr, inputs=[card_ids[i]], outputs=card_boxes + card_imgs + card_titles + card_metas + card_ids + card_btns)
+
+# 4) 최종 실행
+app = gr.mount_gradio_app(app, demo, path="/app")
+try: app.mount("/static", StaticFiles(directory="static"), name="static")
+except: pass
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
